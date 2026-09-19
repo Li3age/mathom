@@ -26,16 +26,18 @@ import {
 import { isStale, reportUnlessStale } from "../lib/errors";
 import { formatBytes, formatPercent } from "../lib/format";
 import { PALETTE, canvasColors } from "../lib/palette";
+import { LAYOUT_ALL_DEPTH, layoutCap } from "../lib/prefs";
 
 const SCAN_REFRESH_MS = 400;
 const ZOOM_MS = 220;
 const TOOLTIP_DELAY_MS = 120;
 
-// Grain tile for directory plates. By the layout's contract, culled children
-// still consume their share of space, so every bare plate pixel is real bytes
-// too small to draw — the grain makes that read as "many small files" instead
-// of dead space. Drawn tiles paint over it, so it shows only where content
-// was culled.
+// Directory plates read two ways. Grain means the plate's children are real
+// bytes too small to draw: the layout culls them but still gives them their
+// share of space, and drawn tiles paint over it, so it survives only where
+// content was culled. A plate at the depth cap gets no grain — its contents
+// are hidden by the depth preference rather than by their size — and is
+// marked as somewhere to drill into instead.
 const GRAIN_PITCH = 4;
 
 let grainTile: { key: string; canvas: HTMLCanvasElement } | null = null;
@@ -106,6 +108,8 @@ export interface TreemapProps {
   hideSystem: boolean;
   /** Active view filter (search grammar) or null. */
   filter: string | null;
+  /** Levels to lay out below the focused folder; null lays out all of them. */
+  maxDepth: number | null;
   selected: number | null;
   hoveredId: number | null;
   onSelect: (rect: TreemapRect) => void;
@@ -128,6 +132,7 @@ export function Treemap({
   themeRev,
   hideSystem,
   filter,
+  maxDepth,
   selected,
   hoveredId,
   onSelect,
@@ -141,6 +146,8 @@ export function Treemap({
   const tooltipRef = useRef<HTMLDivElement>(null);
 
   const rectsRef = useRef<TreemapRect[]>([]);
+  // The cap `rectsRef` was laid out with; see the collapsed-plate pass in bake.
+  const rectsCapRef = useRef(LAYOUT_ALL_DEPTH);
   const byIdRef = useRef<Map<number, TreemapRect>>(new Map());
   const offscreenRef = useRef<HTMLCanvasElement | null>(null);
   const rootIdRef = useRef(0);
@@ -166,6 +173,8 @@ export function Treemap({
   hideSystemRef.current = hideSystem;
   const filterRef = useRef(filter);
   filterRef.current = filter;
+  const maxDepthRef = useRef(maxDepth);
+  maxDepthRef.current = maxDepth;
 
   const [crumbs, setCrumbs] = useState<Crumb[]>([]);
   const [tooltip, setTooltip] = useState<TooltipData | null>(null);
@@ -244,13 +253,32 @@ export function Treemap({
     ctx.fillStyle = theme.background;
     ctx.fillRect(0, 0, off.width, off.height);
 
+    // Grain on every plate that was expanded. By the layout's contract culled
+    // children still eat their share of the plate, so bare grain reads as
+    // "many small files" rather than as dead space. The cap comes from the
+    // rects' own layout, not the live preference — a re-bake can land while a
+    // depth change is still in flight.
+    const cap = rectsCapRef.current;
     ctx.fillStyle = ctx.createPattern(
       getGrainTile(theme.plate, theme.plateGrain),
       "repeat",
     )!;
     ctx.beginPath();
     for (const r of rects) {
-      if (!r.isDir) continue;
+      if (!r.isDir || r.depth === cap) continue;
+      const s = snap(r, dpr, 0);
+      if (s.w > 0 && s.h > 0) ctx.rect(s.x, s.y, s.w, s.h);
+    }
+    ctx.fill();
+
+    // A plate *at* the cap means something else: its contents are hidden by
+    // the depth preference, not by their size. Paint it bare — which has to
+    // happen after the grain, or an ancestor's pass would texture it right
+    // back — and mark it further down as somewhere to drill into.
+    ctx.fillStyle = theme.plate;
+    ctx.beginPath();
+    for (const r of rects) {
+      if (!r.isDir || r.depth !== cap) continue;
       const s = snap(r, dpr, 0);
       if (s.w > 0 && s.h > 0) ctx.rect(s.x, s.y, s.w, s.h);
     }
@@ -278,6 +306,27 @@ export function Treemap({
       const s = snap(r, dpr, 1);
       if (s.w > 3 && s.h > 3) ctx.drawImage(sprite, s.x, s.y, s.w, s.h);
     }
+
+    // Bare plates would read as empty; a "+" says there is more inside. Two
+    // strokes rather than a glyph: text metrics blur at fractional dpr.
+    ctx.strokeStyle = theme.plateMark;
+    ctx.lineWidth = Math.max(1, Math.round(2 * dpr));
+    ctx.beginPath();
+    for (const r of rects) {
+      if (!r.isDir || r.depth !== cap) continue;
+      const s = snap(r, dpr, 0);
+      // Scales with the plate, so a small one gets a small mark rather than
+      // none: the plate is bare either way, and a bare plate with no mark at
+      // all would read as empty.
+      const arm = Math.min(8 * dpr, Math.min(s.w, s.h) / 3);
+      const cx = s.x + s.w / 2;
+      const cy = s.y + s.h / 2;
+      ctx.moveTo(cx - arm, cy);
+      ctx.lineTo(cx + arm, cy);
+      ctx.moveTo(cx, cy - arm);
+      ctx.lineTo(cx, cy + arm);
+    }
+    ctx.stroke();
 
     if (zoomRafRef.current === 0) blit();
   }, [blit]);
@@ -327,9 +376,11 @@ export function Treemap({
         h,
         hideSystemRef.current,
         filterRef.current,
+        maxDepthRef.current,
       );
       if (seq !== fetchSeqRef.current || forRoot !== rootIdRef.current) return;
       rectsRef.current = rects;
+      rectsCapRef.current = layoutCap(maxDepthRef.current);
       byIdRef.current = new Map(rects.map((r) => [r.id, r]));
       hitFrozenRef.current = false;
       setHasRects(rects.length > 0);
@@ -421,9 +472,12 @@ export function Treemap({
     bake(); // repaint the baked layout with the new theme's canvas colors
   }, [themeRev, bake]);
 
+  // Depth only drops rects the cap hides; the ones that stay keep their exact
+  // geometry (see the treemap layout's cap test), so there is nothing to freeze
+  // hit-testing against while the new layout is in flight.
   useEffect(() => {
     void fetchLayout();
-  }, [hideSystem, filter, fetchLayout]);
+  }, [hideSystem, filter, maxDepth, fetchLayout]);
 
   const prevStateRef = useRef<string | undefined>(undefined);
   useEffect(() => {

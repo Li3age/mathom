@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { DEPTH_OPTIONS, type DepthPref } from "../lib/prefs";
 import {
   ACCENTS,
   type AccentName,
@@ -15,18 +16,22 @@ const THEME_OPTIONS: { value: ThemePref; label: string }[] = [
 
 interface SettingsMenuProps {
   hideSystem: boolean;
+  maxDepth: DepthPref;
   themePref: ThemePref;
   accent: AccentName;
   onToggleHideSystem: () => void;
+  onMaxDepth: (depth: DepthPref) => void;
   onThemePref: (pref: ThemePref) => void;
   onAccent: (accent: AccentName) => void;
 }
 
 export function SettingsMenu({
   hideSystem,
+  maxDepth,
   themePref,
   accent,
   onToggleHideSystem,
+  onMaxDepth,
   onThemePref,
   onAccent,
 }: SettingsMenuProps) {
@@ -53,8 +58,8 @@ export function SettingsMenu({
     <div ref={boxRef} className="relative shrink-0">
       <button
         onClick={() => setOpen((v) => !v)}
-        title="Appearance"
-        aria-label="Appearance"
+        title="Settings"
+        aria-label="Settings"
         className={`ml-1 flex h-8 w-8 items-center justify-center rounded-md border ${
           open
             ? "border-edge-strong bg-raised text-ink"
@@ -80,6 +85,32 @@ export function SettingsMenu({
             />
             Hide system files
           </label>
+          <div
+            className="mt-3 text-[11px] font-medium tracking-wide text-ink-4 uppercase"
+            title="Levels the treemap expands below the folder in view. Click a block to go deeper."
+          >
+            Treemap depth
+          </div>
+          <div className="mt-1.5 flex rounded-md border border-edge p-0.5">
+            {DEPTH_OPTIONS.map((opt) => (
+              <button
+                key={opt.label}
+                onClick={() => onMaxDepth(opt.value)}
+                title={
+                  opt.value === null
+                    ? "Expand every level"
+                    : `Expand ${opt.label} level${opt.value > 1 ? "s" : ""} below the folder in view`
+                }
+                className={`h-6 flex-1 rounded text-[12px] ${
+                  maxDepth === opt.value
+                    ? "bg-raised text-ink"
+                    : "text-ink-4 hover:text-ink-2"
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
           <div className="mt-3 text-[11px] font-medium tracking-wide text-ink-4 uppercase">
             Theme
           </div>

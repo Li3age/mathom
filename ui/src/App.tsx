@@ -18,6 +18,11 @@ import {
 } from "./lib/api";
 import { copyText } from "./lib/clipboard";
 import { onUiError, reportUiError, reportUnlessStale } from "./lib/errors";
+import {
+  type DepthPref,
+  loadTreemapDepth,
+  saveTreemapDepth,
+} from "./lib/prefs";
 
 const TREE_PANE_MIN = 320;
 const TREEMAP_PANE_MIN = 280;
@@ -56,6 +61,7 @@ export default function App() {
   const [revealId, setRevealId] = useState<number | null>(null);
   const [treeWidth, setTreeWidth] = useState(560);
   const [typePanelOpen, setTypePanelOpen] = useState(true);
+  const [maxDepth, setMaxDepth] = useState<DepthPref>(loadTreemapDepth);
   const [uiError, setUiError] = useState<string | null>(null);
   const [menu, setMenu] = useState<{
     x: number;
@@ -79,6 +85,10 @@ export default function App() {
       .then(setElevation)
       .catch(() => setElevation(null)); // unknown — don't nag
   }, []);
+
+  useEffect(() => {
+    saveTreemapDepth(maxDepth);
+  }, [maxDepth]);
 
   useEffect(() => {
     let timer = 0;
@@ -359,6 +369,7 @@ export default function App() {
         hideSystem={scan.hideSystem}
         filter={scan.filter}
         typePanelOpen={typePanelOpen}
+        maxDepth={maxDepth}
         themePref={theme.pref}
         accent={theme.accent}
         onScan={handleScan}
@@ -367,6 +378,7 @@ export default function App() {
         onToggleTypePanel={() => setTypePanelOpen((v) => !v)}
         onSearchSelect={handleSearchSelect}
         onApplyFilter={scan.setFilter}
+        onMaxDepth={setMaxDepth}
         onThemePref={theme.setPref}
         onAccent={theme.setAccent}
       />
@@ -422,6 +434,7 @@ export default function App() {
             themeRev={theme.themeRev}
             hideSystem={scan.hideSystem}
             filter={scan.filter}
+            maxDepth={maxDepth}
             selected={selected}
             hoveredId={hoveredId}
             onSelect={handleTreemapSelect}

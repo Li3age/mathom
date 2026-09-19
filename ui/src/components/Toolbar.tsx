@@ -1,4 +1,5 @@
 import type { SearchHit } from "../lib/api";
+import type { DepthPref } from "../lib/prefs";
 import type { AccentName, ThemePref } from "../lib/theme";
 import { ExportMenu } from "./ExportMenu";
 import { ScanMenu } from "./ScanMenu";
@@ -15,6 +16,7 @@ interface ToolbarProps {
   hideSystem: boolean;
   filter: string | null;
   typePanelOpen: boolean;
+  maxDepth: DepthPref;
   themePref: ThemePref;
   accent: AccentName;
   onScan: (path: string) => void;
@@ -23,6 +25,7 @@ interface ToolbarProps {
   onToggleTypePanel: () => void;
   onSearchSelect: (hit: SearchHit) => void;
   onApplyFilter: (query: string | null) => void;
+  onMaxDepth: (depth: DepthPref) => void;
   onThemePref: (pref: ThemePref) => void;
   onAccent: (accent: AccentName) => void;
 }
@@ -35,6 +38,7 @@ export function Toolbar({
   hideSystem,
   filter,
   typePanelOpen,
+  maxDepth,
   themePref,
   accent,
   onScan,
@@ -43,6 +47,7 @@ export function Toolbar({
   onToggleTypePanel,
   onSearchSelect,
   onApplyFilter,
+  onMaxDepth,
   onThemePref,
   onAccent,
 }: ToolbarProps) {
@@ -97,9 +102,11 @@ export function Toolbar({
       />
       <SettingsMenu
         hideSystem={hideSystem}
+        maxDepth={maxDepth}
         themePref={themePref}
         accent={accent}
         onToggleHideSystem={onToggleHideSystem}
+        onMaxDepth={onMaxDepth}
         onThemePref={onThemePref}
         onAccent={onAccent}
       />

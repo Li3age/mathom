@@ -22,6 +22,7 @@ export function canvasColors() {
     background: v("--color-app"),
     plate: v("--color-plate"),
     plateGrain: v("--color-plate-grain"),
+    plateMark: v("--color-plate-mark"),
     selection: v("--color-ink"),
     hoverRing: v("--color-accent-ink"),
   };

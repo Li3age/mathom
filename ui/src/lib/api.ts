@@ -159,6 +159,7 @@ export const api = {
     height: number,
     hideSystem: boolean,
     filter: string | null,
+    maxDepth: number | null,
   ) =>
     invoke<TreemapRect[]>("get_treemap", {
       generation,
@@ -167,6 +168,7 @@ export const api = {
       height,
       hideSystem,
       filter,
+      maxDepth,
     }),
   getTypeStats: (
     generation: number,
