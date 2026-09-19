@@ -338,6 +338,29 @@ pub fn get_path(state: State<'_, AppState>, generation: u64, id: NodeId) -> Resu
     Ok(tree.path(id))
 }
 
+/// The deepest the treemap lays out. Each level insets its children by
+/// 2×`padding_px`, so a real viewport runs out of pixels well before this.
+/// Mirrored as `LAYOUT_ALL_DEPTH` in `ui/src/lib/prefs.ts`.
+const MAX_TREEMAP_DEPTH: u8 = 24;
+
+/// Resolves the UI's `maxDepth` preference into a layout cap, relative to the
+/// laid-out root. `None` is "as deep as the layout goes" — the pre-existing
+/// behaviour.
+///
+/// The floor of 1 is a contract with the UI, not a nicety: at a cap of 0 no
+/// rect has depth 1, and double-click, wheel and the context menu's zoom-in all
+/// hit-test `depth == 1` rects, so every way in but the breadcrumbs would go
+/// dead. The ceiling keeps the recursion — and the IPC payload — bounded on
+/// hostile input.
+fn treemap_max_depth(requested: Option<u32>) -> u8 {
+    requested.map_or(MAX_TREEMAP_DEPTH, |depth| {
+        depth.clamp(1, MAX_TREEMAP_DEPTH as u32) as u8
+    })
+}
+
+// The argument list mirrors the UI's query; grouping it into a struct would
+// only move the same list one level down.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command(async)]
 pub fn get_treemap(
     state: State<'_, AppState>,
@@ -347,6 +370,7 @@ pub fn get_treemap(
     height: f32,
     hide_system: bool,
     filter: Option<String>,
+    max_depth: Option<u32>,
 ) -> Result<Vec<TreemapRectDto>, String> {
     let session = session_for(&state, generation)?;
     let builder = session.builder.read().unwrap();
@@ -360,7 +384,7 @@ pub fn get_treemap(
     let opts = TreemapOptions {
         min_area_px: 3.0,
         padding_px: 1.0,
-        max_depth: 24,
+        max_depth: treemap_max_depth(max_depth),
         hide_system,
     };
     let viewport = Viewport {
@@ -962,6 +986,22 @@ mod tests {
         assert!(!filters_by_extension_only(Some(">1gb")));
         assert!(!filters_by_extension_only(Some("")));
         assert!(!filters_by_extension_only(None));
+    }
+
+    #[test]
+    fn a_requested_depth_is_clamped_into_the_layout_contract() {
+        assert_eq!(treemap_max_depth(None), MAX_TREEMAP_DEPTH);
+        assert_eq!(treemap_max_depth(Some(1)), 1);
+        assert_eq!(treemap_max_depth(Some(3)), 3);
+        assert_eq!(
+            treemap_max_depth(Some(MAX_TREEMAP_DEPTH as u32)),
+            MAX_TREEMAP_DEPTH
+        );
+
+        // 0 would leave the UI's depth-1 hit-tests with nothing to hit; the
+        // ceiling bounds recursion on input the UI would never send itself.
+        assert_eq!(treemap_max_depth(Some(0)), 1);
+        assert_eq!(treemap_max_depth(Some(u32::MAX)), MAX_TREEMAP_DEPTH);
     }
 
     #[test]
