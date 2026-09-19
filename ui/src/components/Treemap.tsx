@@ -55,16 +55,21 @@ function getGrainTile(plate: string, grain: string): HTMLCanvasElement {
   return c;
 }
 
-// Mirrors TREEMAP_LABEL_PX in src-tauri/src/scan.rs: the strip the layout
-// leaves free at the top of every directory when labels are on, and therefore
-// where the label has to sit. If the two disagree the text lands on the
-// children.
-const LABEL_STRIP_PX = 15;
 /** Mirrors the body font stack in index.css so canvas text matches the DOM's. */
 const LABEL_FONT = 'ui-sans-serif, system-ui, "Segoe UI", sans-serif';
 const LABEL_SIZE_PX = 11;
-/** Narrower than this and a name is not worth truncating into. */
-const LABEL_MIN_W_PX = 34;
+/**
+ * Only blocks with room to say something useful get a name. These are what
+ * "useful" costs: narrower and the name is cut down to two letters, shorter
+ * and the size has nowhere to go but over the edge. Deliberately generous —
+ * the point of the mode is the handful of blocks that dominate the map, and
+ * a wall of captions reads as noise.
+ */
+const LABEL_MIN_W_PX = 46;
+/** Taller than this and the size gets a line of its own under the name. */
+const LABEL_TWO_LINE_H_PX = 30;
+/** …and shorter than this and it is not worth writing at all. */
+const LABEL_MIN_H_PX = 18;
 const LABEL_PAD_PX = 4;
 
 /**
@@ -95,57 +100,43 @@ function fitText(
  * work this saves. It is off by default because the blocks are also the map,
  * and writing in all of them changes what the map reads like.
  *
- * Directories are labelled in the strip the layout reserved for them, files in
- * the middle of their block — a file has no strip, and its whole rect is free.
+ * A pure overlay: it reads the rects the layout already produced and writes
+ * text into the boxes, so the geometry with this on is the geometry with it
+ * off, to the pixel. That rules out reserving a strip for a directory's name —
+ * which is why only *solid* blocks get one. A block the layout subdivided is
+ * covered by its children, so a name centred in it would land on top of them;
+ * its children carry the names instead, and a directory you can see into does
+ * not need to say its own.
  */
 function drawLabels(
   ctx: CanvasRenderingContext2D,
   rects: TreemapRect[],
   dpr: number,
-  plate: string,
 ) {
   ctx.font = `${LABEL_SIZE_PX * dpr}px ${LABEL_FONT}`;
   ctx.textBaseline = "middle";
+  ctx.textAlign = "center";
 
   const minW = LABEL_MIN_W_PX * dpr;
   const pad = LABEL_PAD_PX * dpr;
-  const strip = LABEL_STRIP_PX * dpr;
 
-  ctx.textAlign = "left";
-  for (const r of rects) {
-    if (!r.isDir) continue;
-    const s = snap(r, dpr, 0);
-    // A block shorter than the strip has no strip to draw in, and a label half
-    // outside its own plate reads as a label for whatever is below it. Those
-    // are plates the layout stopped short of subdividing anyway.
-    if (s.w < minW || s.h < strip) continue;
-    // The strip is the one part of the plate that carries no texture: the
-    // layout left it empty for exactly this, and a name read through the grain
-    // is a name you have to squint at.
-    ctx.fillStyle = plate;
-    ctx.fillRect(s.x, s.y, s.w, strip);
-    ctx.fillStyle = textOn(plate);
-    const text = fitText(
-      ctx,
-      `${r.name} · ${formatBytes(r.size)}`,
-      s.w - 2 * pad,
-    );
-    if (text) ctx.fillText(text, s.x + pad, s.y + strip / 2);
-  }
-
-  ctx.textAlign = "center";
-  for (const r of rects) {
-    if (r.isDir) continue;
+  for (let i = 0; i < rects.length; i++) {
+    const r = rects[i];
+    // Rects come out parents before children, so a parent's first child is the
+    // very next entry: a deeper neighbour means the layout subdivided this one.
+    if ((rects[i + 1]?.depth ?? 0) > r.depth) continue;
     const s = snap(r, dpr, 1);
-    if (s.w < minW) continue;
-    ctx.fillStyle = textOn(PALETTE[r.category] ?? PALETTE[10]);
+    if (s.w < minW || s.h < LABEL_MIN_H_PX * dpr) continue;
+    ctx.fillStyle = r.isDir
+      ? textOn(canvasColors().plate)
+      : textOn(PALETTE[r.category] ?? PALETTE[10]);
     const name = fitText(ctx, r.name, s.w - 2 * pad);
     if (!name) continue;
     const cx = s.x + s.w / 2;
-    if (s.h >= 26 * dpr) {
+    if (s.h >= LABEL_TWO_LINE_H_PX * dpr) {
       ctx.fillText(name, cx, s.y + s.h / 2 - 6 * dpr);
       ctx.fillText(formatBytes(r.size), cx, s.y + s.h / 2 + 8 * dpr);
-    } else if (s.h >= 13 * dpr) {
+    } else {
       ctx.fillText(name, cx, s.y + s.h / 2);
     }
   }
@@ -357,6 +348,28 @@ export function Treemap({
     }
     ctx.fill();
 
+    // A plate with no children is the final answer for the space it covers,
+    // and it needs a seam — the grain under it is one continuous pattern, so
+    // thirty folders of equal size would otherwise draw as a single flat
+    // field with nothing to say where one ends. Painting the seam means
+    // painting the background over it: the parent's plate is underneath, and
+    // a gap alone would just show more of the same texture. Plates that *do*
+    // have children are only backing for them and get nothing, or every
+    // subdivided directory would ring itself in a hairline frame.
+    ctx.fillStyle = theme.background;
+    ctx.beginPath();
+    for (let i = 0; i < rects.length; i++) {
+      const r = rects[i];
+      // Rects come out parents before children, so the next entry is a child
+      // exactly when it is deeper — the test for "subdivided".
+      if (!r.isDir || (rects[i + 1]?.depth ?? 0) > r.depth) continue;
+      const s = snap(r, dpr, 1);
+      if (s.w <= 0 || s.h <= 0) continue;
+      ctx.rect(s.x + s.w, s.y, dpr, s.h + dpr);
+      ctx.rect(s.x, s.y + s.h, s.w, dpr);
+    }
+    ctx.fill();
+
     const buckets: TreemapRect[][] = PALETTE.map(() => []);
     for (const r of rects) {
       if (!r.isDir) buckets[r.category]?.push(r);
@@ -380,7 +393,7 @@ export function Treemap({
       if (s.w > 3 && s.h > 3) ctx.drawImage(sprite, s.x, s.y, s.w, s.h);
     }
 
-    if (labelsRef.current) drawLabels(ctx, rects, dpr, theme.plate);
+    if (labelsRef.current) drawLabels(ctx, rects, dpr);
 
     if (zoomRafRef.current === 0) blit();
   }, [blit]);
@@ -430,7 +443,6 @@ export function Treemap({
         h,
         hideSystemRef.current,
         filterRef.current,
-        labelsRef.current,
       );
       if (seq !== fetchSeqRef.current || forRoot !== rootIdRef.current) return;
       rectsRef.current = rects;
@@ -527,7 +539,13 @@ export function Treemap({
 
   useEffect(() => {
     void fetchLayout();
-  }, [hideSystem, filter, labels, fetchLayout]);
+  }, [hideSystem, filter, fetchLayout]);
+
+  useEffect(() => {
+    // Labels are painted over the baked layout, never into it: toggling them
+    // is a repaint of the same rects, not a new query.
+    bake();
+  }, [labels, bake]);
 
   const prevStateRef = useRef<string | undefined>(undefined);
   useEffect(() => {

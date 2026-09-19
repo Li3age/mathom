@@ -8,8 +8,13 @@
 //! drawn anyway, so a directory tiles edge to edge instead of opening holes
 //! nobody can attribute to anything. What still does not fit at that size is
 //! dropped — smallest first — and the survivors re-normalize into the space,
-//! so dropping leaves no hole either. A directory subdivides only while its
-//! own interior can hold a legible child.
+//! so dropping leaves no hole either.
+//!
+//! How deep that goes is decided by the pixels, not by a number: a directory
+//! subdivides only while its interior can hold a legible child *and* its
+//! biggest child would land well clear of the floor. Without the second half,
+//! folders nest into folders of specks — each level spending padding to cut
+//! the next one finer — and the map ends up a mesh nothing can be read from.
 
 use crate::category::categorize;
 use crate::entry::EntryFlags;
@@ -32,26 +37,21 @@ pub struct TreemapOptions {
     /// children out strictly proportionally.
     pub min_side_px: f32,
     pub padding_px: f32,
-    /// Vertical strip a directory reserves at the top of its interior for its
-    /// label; zero reserves nothing. Only the *children's* frame shrinks —
-    /// see `emit` for why a directory's own rect must not depend on this.
-    pub label_px: f32,
     pub max_depth: u8,
     /// Omit SYSTEM entries and proportion tiles by visible bytes.
     pub hide_system: bool,
 }
 
-impl Default for TreemapOptions {
-    fn default() -> Self {
-        TreemapOptions {
-            min_side_px: 1.0,
-            padding_px: 1.0,
-            label_px: 0.0,
-            max_depth: 32,
-            hide_system: false,
-        }
-    }
-}
+/// How much clear of the floor a directory's *biggest* child has to land
+/// before the directory is worth subdividing at all — as a multiple of
+/// `min_side_px`, measured on a side.
+///
+/// Without this a directory subdivides as long as it can fit one minimum
+/// block, so folding folders end up as folders-of-specks-of-specks: every
+/// level eats padding and cuts the last one finer, and what you get is a
+/// field of blocks too small to read or to point at. A folder whose best
+/// child would still be a speck says more as one plate.
+const DETAIL_FACTOR: f64 = 2.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TreemapRect {
@@ -180,15 +180,6 @@ impl Frame {
             h: self.h - 2.0 * pad,
         }
     }
-
-    /// Takes `pad` off the top edge alone: the strip a label sits in.
-    fn below(&self, pad: f64) -> Frame {
-        Frame {
-            y: self.y + pad,
-            h: self.h - pad,
-            ..*self
-        }
-    }
 }
 
 fn emit(
@@ -225,17 +216,15 @@ fn emit(
     if inner.w <= 0.0 || inner.h <= 0.0 {
         return;
     }
-    let body = inner.below(opts.label_px as f64);
-    // Adaptive depth: subdivide only where a child could still be legible.
-    // Going one level deeper costs padding, a label strip and the padding
-    // again, so a branch runs out of room on its own and stops — which is
-    // what keeps a big folder from dissolving into specks, and a small one
-    // from showing levels nobody can see. `max_depth` is only an upper bound
+    // Adaptive depth, second half: going a level deeper costs padding off
+    // every side of every grandchild, so a branch runs out of room on its own
+    // and stops. (`lay_children` applies the first half — whether the biggest
+    // child here is worth a level at all.) `max_depth` is only an upper bound
     // on top of that.
-    if body.w < opts.min_side_px as f64 || body.h < opts.min_side_px as f64 {
+    if inner.w < opts.min_side_px as f64 || inner.h < opts.min_side_px as f64 {
         return;
     }
-    lay_children(tree, id, body, depth + 1, opts, visible, out);
+    lay_children(tree, id, inner, depth + 1, opts, visible, out);
 }
 
 fn lay_children(
@@ -261,6 +250,16 @@ fn lay_children(
     let area = frame.area();
     let scale = area / total;
     let min_side = opts.min_side_px as f64;
+
+    // Adaptive depth, first half. A level is worth having only if the biggest
+    // thing in here comes out well clear of the floor: otherwise the
+    // subdivision is a mosaic of specks that says no more than the plate it
+    // replaces did, and it says it one folder deeper every time. Items are
+    // sorted, so the first is the biggest.
+    let detail = min_side * DETAIL_FACTOR;
+    if min_side > 0.0 && items[0].1 as f64 * scale < detail * detail {
+        return;
+    }
 
     let rows = if min_side <= 0.0 {
         // No floor to honour: strictly proportional, nothing to refit.
@@ -308,6 +307,15 @@ impl Row {
 /// Packs a floored weight list into `frame`: shed from the tail until the
 /// survivors tile it in legible blocks. Every pass re-normalizes, so whatever
 /// the dropped items were holding flows back into the ones that remain.
+///
+/// Shedding cannot stop at the first unfit row, tempting as that is: the row
+/// that gave out is the *start of the run* that did, and when that run is the
+/// whole tail, stopping there leaves a directory of equals showing as one
+/// plate. Nor is a row fit or unfit on its own — a run of equal blocks tiles
+/// legibly for some row counts and not others, so the whole layout has to be
+/// tried again at each size. A slice at a time, therefore, dropping the
+/// smallest first as the user would expect. `keep` only shrinks and a lone
+/// block fills the frame, so this converges from any starting point.
 fn fit(weights: &[f64], frame: Frame, min_side: f64) -> Vec<Row> {
     let area = frame.area();
     let mut keep = weights.len();
@@ -320,20 +328,12 @@ fn fit(weights: &[f64], frame: Frame, min_side: f64) -> Vec<Row> {
         let norm = area / sum;
         let fitted: Vec<f64> = weights[..keep].iter().map(|w| w * norm).collect();
         let rows = squarify(&fitted, frame);
-        match first_unfit(&rows, keep, min_side) {
-            // The very first row is unfit, so no later one can be better: the
-            // run is cut too finely for this frame to tile legibly at all.
-            // Shed a slice of the tail and try a coarser cut — dropping
-            // everything but the biggest child would be the wrong answer for a
-            // directory full of equals.
-            Some(0) if keep > 1 => keep -= (keep / 16).max(1),
-            // A later row gives out: that row and the tail behind it are what
-            // the floor cannot afford.
-            Some(at) if keep > 1 => keep = at,
-            // `keep == 1` lays one block across the whole frame, which cannot
-            // be unfit — so this is the clean case, and the only way out.
-            _ => return rows,
+        // A lone block fills the frame and cannot be unfit, so a clean run
+        // here is also the only way out of the loop.
+        if keep == 1 || first_unfit(&rows, keep, min_side).is_none() {
+            return rows;
         }
+        keep -= (keep / 16).max(1);
     }
 }
 
@@ -469,7 +469,6 @@ mod tests {
         TreemapOptions {
             min_side_px: 0.0,
             padding_px: 0.0,
-            label_px: 0.0,
             max_depth: 32,
             hide_system: false,
         }
@@ -540,12 +539,12 @@ mod tests {
         builder.finish()
     }
 
-    /// The area a directory hands to its children: its own rect less the
-    /// padding and the label strip, exactly as `emit` computes it.
+    /// The area a directory hands to its children: its own rect inset by the
+    /// padding, exactly as `emit` computes it.
     fn body_area(dir: &TreemapRect, opts: &TreemapOptions) -> f64 {
         let pad = opts.padding_px as f64;
         let w = (dir.w as f64 - 2.0 * pad).max(0.0);
-        let h = (dir.h as f64 - 2.0 * pad - opts.label_px as f64).max(0.0);
+        let h = (dir.h as f64 - 2.0 * pad).max(0.0);
         w * h
     }
 
@@ -554,7 +553,7 @@ mod tests {
     /// are both `depth + 1` away from the same root.
     fn children_area(rects: &[TreemapRect], dir: &TreemapRect, opts: &TreemapOptions) -> f64 {
         let pad = opts.padding_px;
-        let (x0, y0) = (dir.x + pad, dir.y + pad + opts.label_px);
+        let (x0, y0) = (dir.x + pad, dir.y + pad);
         let (x1, y1) = (dir.x + dir.w - pad, dir.y + dir.h - pad);
         rects
             .iter()
@@ -689,7 +688,6 @@ mod tests {
         let opts = TreemapOptions {
             min_side_px: 0.0,
             padding_px: 2.0,
-            label_px: 0.0,
             max_depth: 32,
             hide_system: false,
         };
@@ -739,23 +737,21 @@ mod tests {
 
     /// Positively: children whose proportional share is under the floor are
     /// drawn at the floor anyway, and what they cover is the whole block. A
-    /// culling layout would have left this 100×100 empty.
+    /// culling layout would have left their corner of it flat and empty.
     #[test]
     fn small_children_are_raised_to_the_floor_and_fill_the_block() {
-        // 300 equal files: 33px² each, under the 6px (36px²) floor.
-        let tree = equal_files(300, 1);
+        // 300 bytes for `big`, one each for sixty specks: 111px² each here,
+        // under the 6px (36px²) floor, so the floor is what sizes them.
+        let tree = speck_tree(300, 60);
         let opts = TreemapOptions {
             min_side_px: 6.0,
             ..no_padding()
         };
-        let rects = layout(&tree, 0, Viewport { w: 100.0, h: 100.0 }, &opts);
+        let rects = layout(&tree, 0, Viewport { w: 200.0, h: 200.0 }, &opts);
 
         let root = rect_of(&rects, 0);
         let drawn = rects.iter().filter(|r| r.depth == 1).count();
-        // A 100×100 frame holds at most (100/6)² ≈ 277 of these. The run has
-        // to stay in that neighbourhood: shedding the tail until one block is
-        // left would also fill the frame, and would be useless.
-        assert!(drawn >= 100, "the block is tiled, not one plate: {drawn}");
+        assert!(drawn > 1, "the specks are drawn, not dropped: {drawn}");
         assert!(
             (children_area(&rects, &root, &opts) - body_area(&root, &opts)).abs() < 0.01,
             "the children cover the block"
@@ -775,15 +771,20 @@ mod tests {
     /// sized, whatever their byte counts.
     #[test]
     fn floored_siblings_all_get_the_same_size() {
-        let tree = equal_files(300, 1);
+        let tree = speck_tree(300, 60);
         let opts = TreemapOptions {
             min_side_px: 6.0,
             ..no_padding()
         };
-        let rects = layout(&tree, 0, Viewport { w: 100.0, h: 100.0 }, &opts);
+        let rects = layout(&tree, 0, Viewport { w: 200.0, h: 200.0 }, &opts);
 
-        let areas: Vec<f64> = rects.iter().filter(|r| r.depth == 1).map(area).collect();
-        assert!(areas.len() > 1);
+        // Everything but `big` is a speck, and they are all the same speck.
+        let areas: Vec<f64> = rects
+            .iter()
+            .filter(|r| r.depth == 1 && r.id != 1)
+            .map(area)
+            .collect();
+        assert!(areas.len() > 1, "specks were drawn");
         let small = areas.iter().copied().fold(f64::MAX, f64::min);
         let large = areas.iter().copied().fold(f64::MIN, f64::max);
         assert!(small / large > 0.99, "sizes spread {small} to {large}");
@@ -798,7 +799,6 @@ mod tests {
         let opts = TreemapOptions {
             min_side_px: 6.0,
             padding_px: 2.0,
-            label_px: 5.0,
             ..no_padding()
         };
         let rects = layout(&tree, 0, Viewport { w: 100.0, h: 100.0 }, &opts);
@@ -848,7 +848,6 @@ mod tests {
         let opts = TreemapOptions {
             min_side_px: 6.0,
             padding_px: 1.0,
-            label_px: 15.0,
             max_depth: 32,
             hide_system: false,
         };
@@ -877,43 +876,13 @@ mod tests {
         }
     }
 
-    /// Each level takes its strip out of its own children's frame, so a nested
-    /// directory starts one strip lower than its parent did. That compounding
-    /// is what makes depth cost pixels — and why it stops on its own.
-    #[test]
-    fn every_level_takes_its_label_strip_from_its_children() {
-        let mut b = EntryBatch::default();
-        b.push("root", entry(0, 0, DIR, 0));
-        b.push("d1", entry(1, 0, DIR, 0));
-        b.push("d2", entry(2, 1, DIR, 0));
-        b.push("f", entry(3, 2, FILE, 100));
-        let mut builder = TreeBuilder::new();
-        builder.add_batch(&b);
-        let tree = builder.finish();
-
-        let rects = layout(&tree, 0, Viewport { w: 100.0, h: 100.0 }, &labelled(10.0));
-
-        // The root's own rect is the whole viewport: the strip is taken below
-        // it, not out of it.
-        assert!((rect_of(&rects, 0).y).abs() < 0.01);
-        assert!((rect_of(&rects, 0).h - 100.0).abs() < 0.01);
-        for (id, top, height) in [(1u32, 10.0, 90.0), (2, 20.0, 80.0), (3, 30.0, 70.0)] {
-            let r = rect_of(&rects, id);
-            assert!((r.y - top).abs() < 0.01, "id {id} starts a strip lower");
-            assert!(
-                (r.h - height).abs() < 0.01,
-                "id {id} lost a strip off its height"
-            );
-            assert!((r.w - 100.0).abs() < 0.01, "a strip is vertical");
-        }
-    }
-
     /// Depth changes stay live because a capped layout is a prefix of a deeper
-    /// one. The strip is the one addition that could break it — it has to
-    /// shrink frames the cap then hides anyway, never the rect a shallower
-    /// layout keeps.
+    /// one: the UI re-renders from the same rect list rather than re-fetching,
+    /// so a rect a shallower cap drew has to hold still when a deeper one adds
+    /// to it. Everything a level decides has to be local to that directory for
+    /// this to survive the floor.
     #[test]
-    fn a_label_strip_does_not_move_the_rects_a_cap_leaves_behind() {
+    fn a_depth_cap_only_hides_the_rects_it_stops_short_of() {
         let mut b = EntryBatch::default();
         b.push("root", entry(0, 0, DIR, 0));
         b.push("d1", entry(1, 0, DIR, 0));
@@ -926,8 +895,8 @@ mod tests {
         let tree = builder.finish();
         let vp = Viewport { w: 400.0, h: 300.0 };
 
-        let capped = layout(&tree, 0, vp, &capped_at(2, 10.0));
-        let deep: Vec<TreemapRect> = layout(&tree, 0, vp, &capped_at(8, 10.0))
+        let capped = layout(&tree, 0, vp, &capped_at(2));
+        let deep: Vec<TreemapRect> = layout(&tree, 0, vp, &capped_at(8))
             .into_iter()
             .filter(|r| r.depth <= 2)
             .collect();
@@ -937,10 +906,11 @@ mod tests {
         assert!(capped.iter().all(|r| r.id != 5), "depth-3 file is not");
     }
 
-    /// Depth follows the pixels available: the same subtree expands when it has
-    /// room and stops when it does not, with `max_depth` nowhere near either.
+    /// Adaptive depth, one half: the same subtree expands when its biggest
+    /// child is worth a level and stops when it is not — with `max_depth`
+    /// nowhere near either, and the level's own cost priced in.
     #[test]
-    fn a_directory_stops_expanding_when_its_interior_is_too_small() {
+    fn a_level_that_would_only_show_a_speck_is_not_taken() {
         let mut b = EntryBatch::default();
         b.push("root", entry(0, 0, DIR, 0));
         b.push("wide", entry(1, 0, FILE, 800));
@@ -952,35 +922,69 @@ mod tests {
 
         let opts = TreemapOptions {
             min_side_px: 25.0,
-            ..labelled(10.0)
+            ..no_padding()
         };
 
-        // A 40px-tall viewport leaves `mid` 30px, and its own strip takes 10:
-        // the 20px left cannot hold a child, so it stays a plain plate.
+        // A 40px-tall viewport leaves `mid` a 40×40 body. Its child is worth
+        // 1600px² there, against the 2500px² a 25px floor at twice over asks
+        // for, so the level would show one speck: `mid` stays a plain plate.
         let cramped = layout(&tree, 0, Viewport { w: 200.0, h: 40.0 }, &opts);
         assert!(cramped.iter().any(|r| r.id == 2), "the dir itself is drawn");
         assert!(
             cramped.iter().all(|r| r.id != 3),
-            "its interior cannot hold a legible child"
+            "a speck of a level is not worth the descent"
         );
 
-        // The same tree given more height expands, and nobody raised a cap.
+        // Same tree, taller: the body is 40×100, the child is worth 4000px²,
+        // and the descent happens. Nobody raised a cap.
         let roomy = layout(&tree, 0, Viewport { w: 200.0, h: 100.0 }, &opts);
-        assert!(roomy.iter().any(|r| r.id == 3), "now there is room");
+        assert!(roomy.iter().any(|r| r.id == 3), "now the level is worth it");
         assert!(opts.max_depth > 1, "the cap never came into it");
     }
 
-    fn labelled(label_px: f32) -> TreemapOptions {
-        TreemapOptions {
-            label_px,
+    /// Adaptive depth, the other half: a body too thin for even one minimum
+    /// block ends the descent there, whatever is inside it.
+    #[test]
+    fn a_body_thinner_than_one_block_is_not_subdivided() {
+        let tree = flat_tree(&[("a", 100), ("b", 100)]);
+        let opts = TreemapOptions {
+            min_side_px: 25.0,
             ..no_padding()
-        }
+        };
+
+        // 1000 wide and 20 tall: a child could have 500×20, and 20 is under
+        // the floor, so the root stays a plate.
+        let rects = layout(&tree, 0, Viewport { w: 1000.0, h: 20.0 }, &opts);
+
+        assert_eq!(rects.len(), 1, "only the root");
     }
 
-    fn capped_at(max_depth: u8, label_px: f32) -> TreemapOptions {
+    /// The nesting complaint, as a test. A folder of many equal small files
+    /// has nothing to show one level down — every child would come out a
+    /// speck — so it stays one plate instead of dissolving into a mesh, and
+    /// so does every folder under it. Give the same folder real room and the
+    /// same children are worth drawing.
+    #[test]
+    fn a_folder_of_equals_stays_a_plate_until_a_child_is_worth_drawing() {
+        let tree = equal_files(300, 1);
+        let opts = TreemapOptions {
+            min_side_px: 6.0,
+            ..no_padding()
+        };
+
+        let tight = layout(&tree, 0, Viewport { w: 100.0, h: 100.0 }, &opts);
+        assert_eq!(tight.len(), 1, "one plate, not 300 blocks");
+
+        let roomy = layout(&tree, 0, Viewport { w: 600.0, h: 600.0 }, &opts);
+        assert!(
+            roomy.len() > 100,
+            "at 1200px² a child the floor is not the point any more"
+        );
+    }
+
+    fn capped_at(max_depth: u8) -> TreemapOptions {
         TreemapOptions {
             max_depth,
-            label_px,
             ..no_padding()
         }
     }
@@ -1011,7 +1015,6 @@ mod tests {
         let opts = TreemapOptions {
             min_side_px: 0.0,
             padding_px: 0.0,
-            label_px: 0.0,
             max_depth: 1,
             hide_system: false,
         };
