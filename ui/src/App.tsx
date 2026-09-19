@@ -357,6 +357,7 @@ export default function App() {
         viewRootId={viewRootId}
         startError={scan.startError}
         hideSystem={scan.hideSystem}
+        showLabels={scan.showLabels}
         filter={scan.filter}
         typePanelOpen={typePanelOpen}
         themePref={theme.pref}
@@ -364,6 +365,7 @@ export default function App() {
         onScan={handleScan}
         onCancel={scan.cancel}
         onToggleHideSystem={scan.toggleHideSystem}
+        onToggleShowLabels={scan.toggleShowLabels}
         onToggleTypePanel={() => setTypePanelOpen((v) => !v)}
         onSearchSelect={handleSearchSelect}
         onApplyFilter={scan.setFilter}
@@ -422,6 +424,7 @@ export default function App() {
             themeRev={theme.themeRev}
             hideSystem={scan.hideSystem}
             filter={scan.filter}
+            labels={scan.showLabels}
             selected={selected}
             hoveredId={hoveredId}
             onSelect={handleTreemapSelect}

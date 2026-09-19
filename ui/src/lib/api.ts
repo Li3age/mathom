@@ -46,7 +46,7 @@ export interface TreemapRect {
   depth: number;
   isDir: boolean;
   category: number;
-  /** Drawn inside the block; see `bake` in Treemap.tsx. */
+  /** Drawn inside the block when the view asks for labels. */
   name: string;
   size: number;
 }
@@ -162,6 +162,7 @@ export const api = {
     height: number,
     hideSystem: boolean,
     filter: string | null,
+    labels: boolean,
   ) =>
     invoke<TreemapRect[]>("get_treemap", {
       generation,
@@ -170,6 +171,7 @@ export const api = {
       height,
       hideSystem,
       filter,
+      labels,
     }),
   getTypeStats: (
     generation: number,

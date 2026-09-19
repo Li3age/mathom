@@ -346,12 +346,15 @@ pub fn get_path(state: State<'_, AppState>, generation: u64, id: NodeId) -> Resu
 /// as `TREEMAP_MIN_SIDE_PX` in `ui/src/lib/prefs.ts`.
 const TREEMAP_MIN_SIDE_PX: f32 = 6.0;
 
-/// The strip a directory reserves at the top of its interior for its label —
-/// and therefore the height the UI has to draw that label in. Mirrored as
-/// `TREEMAP_LABEL_PX` in `ui/src/lib/prefs.ts`: the two have to agree or the
-/// text lands on the children instead of above them.
+/// The strip a directory reserves at the top of its interior for its label,
+/// when labels are on — and therefore the height the UI has to draw that label
+/// in. Mirrored as `LABEL_STRIP_PX` in `ui/src/components/Treemap.tsx`: the two
+/// have to agree or the text lands on the children instead of above them.
 const TREEMAP_LABEL_PX: f32 = 15.0;
 
+// The argument list mirrors the UI's query; grouping it into a struct would
+// only move the same list one level down.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command(async)]
 pub fn get_treemap(
     state: State<'_, AppState>,
@@ -361,6 +364,7 @@ pub fn get_treemap(
     height: f32,
     hide_system: bool,
     filter: Option<String>,
+    labels: bool,
 ) -> Result<Vec<TreemapRectDto>, String> {
     let session = session_for(&state, generation)?;
     let builder = session.builder.read().unwrap();
@@ -374,7 +378,9 @@ pub fn get_treemap(
     let opts = TreemapOptions {
         min_side_px: TREEMAP_MIN_SIDE_PX,
         padding_px: 1.0,
-        label_px: TREEMAP_LABEL_PX,
+        // Labels off means the strip is not reserved at all, so the geometry
+        // is exactly what it was before labels existed.
+        label_px: if labels { TREEMAP_LABEL_PX } else { 0.0 },
         max_depth: 24,
         hide_system,
     };

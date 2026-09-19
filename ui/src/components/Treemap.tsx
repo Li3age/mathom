@@ -25,15 +25,40 @@ import {
 } from "../lib/api";
 import { isStale, reportUnlessStale } from "../lib/errors";
 import { formatBytes, formatPercent } from "../lib/format";
-import { PALETTE, canvasColors, plateShade, textOn } from "../lib/palette";
+import { PALETTE, canvasColors, textOn } from "../lib/palette";
 
 const SCAN_REFRESH_MS = 400;
 const ZOOM_MS = 220;
 const TOOLTIP_DELAY_MS = 120;
 
+// Grain tile for directory plates. By the layout's contract, culled children
+// still consume their share of space, so every bare plate pixel is real bytes
+// too small to draw — the grain makes that read as "many small files" instead
+// of dead space. Drawn tiles paint over it, so it shows only where content
+// was culled.
+const GRAIN_PITCH = 4;
+
+let grainTile: { key: string; canvas: HTMLCanvasElement } | null = null;
+
+function getGrainTile(plate: string, grain: string): HTMLCanvasElement {
+  const key = `${plate}|${grain}`;
+  if (grainTile?.key === key) return grainTile.canvas;
+  const c = document.createElement("canvas");
+  c.width = GRAIN_PITCH;
+  c.height = GRAIN_PITCH;
+  const ctx = c.getContext("2d")!;
+  ctx.fillStyle = plate;
+  ctx.fillRect(0, 0, GRAIN_PITCH, GRAIN_PITCH);
+  ctx.fillStyle = grain;
+  ctx.fillRect(1, 1, 1, 1);
+  grainTile = { key, canvas: c };
+  return c;
+}
+
 // Mirrors TREEMAP_LABEL_PX in src-tauri/src/scan.rs: the strip the layout
-// leaves free at the top of every directory, and therefore where its label has
-// to sit. If the two disagree the text lands on the children.
+// leaves free at the top of every directory when labels are on, and therefore
+// where the label has to sit. If the two disagree the text lands on the
+// children.
 const LABEL_STRIP_PX = 15;
 /** Mirrors the body font stack in index.css so canvas text matches the DOM's. */
 const LABEL_FONT = 'ui-sans-serif, system-ui, "Segoe UI", sans-serif';
@@ -64,9 +89,11 @@ function fitText(
 }
 
 /**
- * Names, drawn into the blocks themselves. A map of coloured rectangles tells
- * you where the space went; it does not tell you what any of it is without
- * hovering each one, and hovering every block is the work this saves.
+ * Names, drawn into the blocks themselves, when the view asks for them. A map
+ * of coloured rectangles tells you where the space went; it does not tell you
+ * what any of it is without hovering each one, and hovering every block is the
+ * work this saves. It is off by default because the blocks are also the map,
+ * and writing in all of them changes what the map reads like.
  *
  * Directories are labelled in the strip the layout reserved for them, files in
  * the middle of their block — a file has no strip, and its whole rect is free.
@@ -92,7 +119,12 @@ function drawLabels(
     // outside its own plate reads as a label for whatever is below it. Those
     // are plates the layout stopped short of subdividing anyway.
     if (s.w < minW || s.h < strip) continue;
-    ctx.fillStyle = textOn(plateShade(plate, r.depth));
+    // The strip is the one part of the plate that carries no texture: the
+    // layout left it empty for exactly this, and a name read through the grain
+    // is a name you have to squint at.
+    ctx.fillStyle = plate;
+    ctx.fillRect(s.x, s.y, s.w, strip);
+    ctx.fillStyle = textOn(plate);
     const text = fitText(
       ctx,
       `${r.name} · ${formatBytes(r.size)}`,
@@ -170,6 +202,8 @@ export interface TreemapProps {
   hideSystem: boolean;
   /** Active view filter (search grammar) or null. */
   filter: string | null;
+  /** Draw each block's name and size inside it. Off by default. */
+  labels: boolean;
   selected: number | null;
   hoveredId: number | null;
   onSelect: (rect: TreemapRect) => void;
@@ -192,6 +226,7 @@ export function Treemap({
   themeRev,
   hideSystem,
   filter,
+  labels,
   selected,
   hoveredId,
   onSelect,
@@ -230,6 +265,8 @@ export function Treemap({
   hideSystemRef.current = hideSystem;
   const filterRef = useRef(filter);
   filterRef.current = filter;
+  const labelsRef = useRef(labels);
+  labelsRef.current = labels;
 
   const [crumbs, setCrumbs] = useState<Crumb[]>([]);
   const [tooltip, setTooltip] = useState<TooltipData | null>(null);
@@ -308,25 +345,17 @@ export function Treemap({
     ctx.fillStyle = theme.background;
     ctx.fillRect(0, 0, off.width, off.height);
 
-    // Directory plates, batched one path per nesting level: each level is a
-    // step further from the theme's plate colour, so a block tells you how far
-    // in it sits without needing a texture that has to be explained.
-    const byDepth: TreemapRect[][] = [];
+    ctx.fillStyle = ctx.createPattern(
+      getGrainTile(theme.plate, theme.plateGrain),
+      "repeat",
+    )!;
+    ctx.beginPath();
     for (const r of rects) {
       if (!r.isDir) continue;
-      (byDepth[r.depth] ??= []).push(r);
+      const s = snap(r, dpr, 0);
+      if (s.w > 0 && s.h > 0) ctx.rect(s.x, s.y, s.w, s.h);
     }
-    for (let d = 0; d < byDepth.length; d++) {
-      const level = byDepth[d];
-      if (!level) continue;
-      ctx.fillStyle = plateShade(theme.plate, d);
-      ctx.beginPath();
-      for (const r of level) {
-        const s = snap(r, dpr, 0);
-        if (s.w > 0 && s.h > 0) ctx.rect(s.x, s.y, s.w, s.h);
-      }
-      ctx.fill();
-    }
+    ctx.fill();
 
     const buckets: TreemapRect[][] = PALETTE.map(() => []);
     for (const r of rects) {
@@ -351,7 +380,7 @@ export function Treemap({
       if (s.w > 3 && s.h > 3) ctx.drawImage(sprite, s.x, s.y, s.w, s.h);
     }
 
-    drawLabels(ctx, rects, dpr, theme.plate);
+    if (labelsRef.current) drawLabels(ctx, rects, dpr, theme.plate);
 
     if (zoomRafRef.current === 0) blit();
   }, [blit]);
@@ -401,6 +430,7 @@ export function Treemap({
         h,
         hideSystemRef.current,
         filterRef.current,
+        labelsRef.current,
       );
       if (seq !== fetchSeqRef.current || forRoot !== rootIdRef.current) return;
       rectsRef.current = rects;
@@ -497,7 +527,7 @@ export function Treemap({
 
   useEffect(() => {
     void fetchLayout();
-  }, [hideSystem, filter, fetchLayout]);
+  }, [hideSystem, filter, labels, fetchLayout]);
 
   const prevStateRef = useRef<string | undefined>(undefined);
   useEffect(() => {

@@ -26,6 +26,8 @@ export interface ScanController {
   expanded: ReadonlySet<number>;
   sort: Sort;
   hideSystem: boolean;
+  /** Draw each treemap block's name and size inside it. */
+  showLabels: boolean;
   /** Active view filter (search grammar) or null; applies post-scan only. */
   filter: string | null;
   startError: string | null;
@@ -37,6 +39,7 @@ export interface ScanController {
   expandMany: (ids: number[]) => void;
   changeSort: (key: SortKey) => void;
   toggleHideSystem: () => void;
+  toggleShowLabels: () => void;
   setFilter: (query: string | null) => void;
   pathOf: (id: number) => Promise<string | null>;
 }
@@ -49,6 +52,7 @@ export function useScan(): ScanController {
   const [expanded, setExpanded] = useState<Set<number>>(new Set([0]));
   const [sort, setSort] = useState<Sort>({ key: "size", desc: true });
   const [hideSystem, setHideSystem] = useState(true);
+  const [showLabels, setShowLabels] = useState(false);
   const [filter, setFilterState] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
 
@@ -248,6 +252,8 @@ export function useScan(): ScanController {
 
   const toggleHideSystem = useCallback(() => setHideSystem((v) => !v), []);
 
+  const toggleShowLabels = useCallback(() => setShowLabels((v) => !v), []);
+
   const setFilter = useCallback((query: string | null) => {
     const next = query && query.trim() !== "" ? query : null;
     // Eager ref update: a same-tick reveal must fetch with the new filter, not the stale one.
@@ -274,6 +280,7 @@ export function useScan(): ScanController {
     expanded,
     sort,
     hideSystem,
+    showLabels,
     filter,
     startError,
     scanning: snapshot?.state === "scanning",
@@ -283,6 +290,7 @@ export function useScan(): ScanController {
     expandMany,
     changeSort,
     toggleHideSystem,
+    toggleShowLabels,
     setFilter,
     pathOf,
   };

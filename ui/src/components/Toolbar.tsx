@@ -13,6 +13,7 @@ interface ToolbarProps {
   viewRootId: number;
   startError: string | null;
   hideSystem: boolean;
+  showLabels: boolean;
   filter: string | null;
   typePanelOpen: boolean;
   themePref: ThemePref;
@@ -20,6 +21,7 @@ interface ToolbarProps {
   onScan: (path: string) => void;
   onCancel: () => void;
   onToggleHideSystem: () => void;
+  onToggleShowLabels: () => void;
   onToggleTypePanel: () => void;
   onSearchSelect: (hit: SearchHit) => void;
   onApplyFilter: (query: string | null) => void;
@@ -33,6 +35,7 @@ export function Toolbar({
   viewRootId,
   startError,
   hideSystem,
+  showLabels,
   filter,
   typePanelOpen,
   themePref,
@@ -40,6 +43,7 @@ export function Toolbar({
   onScan,
   onCancel,
   onToggleHideSystem,
+  onToggleShowLabels,
   onToggleTypePanel,
   onSearchSelect,
   onApplyFilter,
@@ -97,9 +101,11 @@ export function Toolbar({
       />
       <SettingsMenu
         hideSystem={hideSystem}
+        showLabels={showLabels}
         themePref={themePref}
         accent={accent}
         onToggleHideSystem={onToggleHideSystem}
+        onToggleShowLabels={onToggleShowLabels}
         onThemePref={onThemePref}
         onAccent={onAccent}
       />

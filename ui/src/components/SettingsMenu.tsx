@@ -15,18 +15,22 @@ const THEME_OPTIONS: { value: ThemePref; label: string }[] = [
 
 interface SettingsMenuProps {
   hideSystem: boolean;
+  showLabels: boolean;
   themePref: ThemePref;
   accent: AccentName;
   onToggleHideSystem: () => void;
+  onToggleShowLabels: () => void;
   onThemePref: (pref: ThemePref) => void;
   onAccent: (accent: AccentName) => void;
 }
 
 export function SettingsMenu({
   hideSystem,
+  showLabels,
   themePref,
   accent,
   onToggleHideSystem,
+  onToggleShowLabels,
   onThemePref,
   onAccent,
 }: SettingsMenuProps) {
@@ -79,6 +83,18 @@ export function SettingsMenu({
               onChange={onToggleHideSystem}
             />
             Hide system files
+          </label>
+          <label
+            className="mt-1.5 flex cursor-pointer items-center gap-2 text-[12px] text-ink-2"
+            title="Write each treemap block's name and size inside it"
+          >
+            <input
+              type="checkbox"
+              className="accent-accent"
+              checked={showLabels}
+              onChange={onToggleShowLabels}
+            />
+            Show names in treemap
           </label>
           <div className="mt-3 text-[11px] font-medium tracking-wide text-ink-4 uppercase">
             Theme

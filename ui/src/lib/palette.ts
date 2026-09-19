@@ -21,15 +21,11 @@ export function canvasColors() {
   return {
     background: v("--color-app"),
     plate: v("--color-plate"),
+    plateGrain: v("--color-plate-grain"),
     selection: v("--color-ink"),
     hoverRing: v("--color-accent-ink"),
   };
 }
-
-/** Levels the plate ramp distinguishes before it stops changing. */
-const SHADE_LEVELS = 6;
-/** Lightness step per nesting level, in 0..255. Enough to see, not to shout. */
-const SHADE_STEP = 8;
 
 /** `#rrggbb` or `rgb(...)`. */
 function rgb(color: string): [number, number, number] {
@@ -52,25 +48,10 @@ function luminance(r: number, g: number, b: number): number {
 }
 
 /**
- * The plate fill for nesting level `level`: one step further from the theme's
- * plate colour for each level in. Depth has to be readable without a texture,
- * because the alternative — a texture that means "something is in here" — has
- * to be explained, while a shade does not. The step follows the theme, so a
- * light plate darkens inward and a dark one lightens.
- */
-export function plateShade(plate: string, level: number): string {
-  const [r, g, b] = rgb(plate);
-  const step = luminance(r, g, b) > 0.4 ? -SHADE_STEP : SHADE_STEP;
-  const lift = Math.min(level, SHADE_LEVELS) * step;
-  const at = (c: number) => Math.max(0, Math.min(255, Math.round(c + lift)));
-  return `rgb(${at(r)}, ${at(g)}, ${at(b)})`;
-}
-
-/**
- * Ink or paper for text on `fill`. File blocks keep the fixed category colours
- * whatever the theme, so this picks literal near-black or near-white rather
- * than a theme token — a token would be chosen for the plate, not for the
- * colour actually underneath.
+ * Ink or paper for text on `fill`, used by the optional block labels. File
+ * blocks keep the fixed category colours whatever the theme, so this picks
+ * literal near-black or near-white rather than a theme token — a token would
+ * be chosen for the plate, not for the colour actually underneath.
  */
 export function textOn(fill: string): string {
   const [r, g, b] = rgb(fill);
