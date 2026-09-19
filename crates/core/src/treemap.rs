@@ -1,9 +1,15 @@
 //! Squarified treemap layout (Bruls / Huizing / van Wijk, 2000).
 //!
 //! Rects are emitted parents-before-children: forward iteration is painter's
-//! order for drawing, reverse is deepest-first for hit-testing. Children
-//! below `min_side_px` are culled but still consume their share of space, and
-//! a directory only subdivides while its own interior can hold a legible one.
+//! order for drawing, reverse is deepest-first for hit-testing.
+//!
+//! `TreemapOptions::min_side_px` is a floor, not a cut-off line. A child too
+//! small to earn its proportional share is raised to one minimum block and
+//! drawn anyway, so a directory tiles edge to edge instead of opening holes
+//! nobody can attribute to anything. What still does not fit at that size is
+//! dropped — smallest first — and the survivors re-normalize into the space,
+//! so dropping leaves no hole either. A directory subdivides only while its
+//! own interior can hold a legible child.
 
 use crate::category::categorize;
 use crate::entry::EntryFlags;
@@ -17,10 +23,13 @@ pub struct Viewport {
 
 #[derive(Clone, Copy, Debug)]
 pub struct TreemapOptions {
-    /// Legibility floor: a child is drawn only if it is at least this wide
-    /// *and* this tall. An area test alone lets a 40×0.1 sliver through, which
-    /// is how the map ends up as a mosaic of specks nothing can be read from.
-    /// Culled children still consume their share of the parent.
+    /// Legibility floor, in pixels: a child is sized to be at least this wide
+    /// *and* this tall. A child whose proportional share falls short is raised
+    /// to one minimum block rather than culled, so the parent has no hole in
+    /// it; an area test alone would let a 40×0.1 sliver through and read as
+    /// blank. Children that no longer fit even at this size are dropped,
+    /// smallest first, and the rest spread into their space. Zero lays the
+    /// children out strictly proportionally.
     pub min_side_px: f32,
     pub padding_px: f32,
     /// Vertical strip a directory reserves at the top of its interior for its
@@ -209,7 +218,9 @@ fn emit(
     // above must stay a function of this directory's own frame and nothing
     // else, or a cap that stops recursion early would move the rects that
     // survive it — the UI switches depth live and relies on them holding
-    // still.
+    // still. The floor, the dropping and the re-normalizing in `lay_children`
+    // are functions of this directory alone for the same reason: never of
+    // `max_depth`, and never of anything global.
     let inner = frame.inset(opts.padding_px as f64);
     if inner.w <= 0.0 || inner.h <= 0.0 {
         return;
@@ -247,23 +258,123 @@ fn lay_children(
     items.sort_unstable_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
 
     let total: f64 = items.iter().map(|&(_, s)| s as f64).sum();
-    let scale = frame.area() / total;
+    let area = frame.area();
+    let scale = area / total;
     let min_side = opts.min_side_px as f64;
 
+    let rows = if min_side <= 0.0 {
+        // No floor to honour: strictly proportional, nothing to refit.
+        let weights: Vec<f64> = items.iter().map(|&(_, s)| s as f64 * scale).collect();
+        squarify(&weights, frame)
+    } else {
+        // The floor is a floor, not a cut-off line. A child too small to earn
+        // its proportional share is raised to one minimum block and drawn
+        // anyway, so the directory fills edge to edge. What does not fit at
+        // that size is dropped — smallest first — and the survivors spread
+        // into the space that frees, so dropping leaves no hole either. That
+        // is the whole trade: draw the small stuff when there is room for it,
+        // and when there is not, the user is here for the big blocks anyway.
+        //
+        // `scale` stays the proportions-only scale throughout. Raising the
+        // weights and then scaling *those* up overshoots the frame, and the
+        // clamp that triggers is exactly the gap this exists to remove.
+        let weights: Vec<f64> = items
+            .iter()
+            .map(|&(_, s)| (s as f64 * scale).max(min_side * min_side))
+            .collect();
+        fit(&weights, frame, min_side)
+    };
+
+    for row in &rows {
+        for (k, f) in row.frames.iter().enumerate() {
+            emit(tree, items[row.start + k].0, *f, depth, opts, visible, out);
+        }
+    }
+}
+
+/// One squarified row: consecutive items starting at `start`, laid out as a
+/// slab. Every frame in a row shares the row's short side.
+struct Row {
+    start: usize,
+    frames: Vec<Frame>,
+}
+
+impl Row {
+    fn end(&self) -> usize {
+        self.start + self.frames.len()
+    }
+}
+
+/// Packs a floored weight list into `frame`: shed from the tail until the
+/// survivors tile it in legible blocks. Every pass re-normalizes, so whatever
+/// the dropped items were holding flows back into the ones that remain.
+fn fit(weights: &[f64], frame: Frame, min_side: f64) -> Vec<Row> {
+    let area = frame.area();
+    let mut keep = weights.len();
+    loop {
+        let mut sum: f64 = weights[..keep].iter().sum();
+        while keep > 1 && sum > area * (1.0 + 1e-9) {
+            keep -= 1;
+            sum -= weights[keep];
+        }
+        let norm = area / sum;
+        let fitted: Vec<f64> = weights[..keep].iter().map(|w| w * norm).collect();
+        let rows = squarify(&fitted, frame);
+        match first_unfit(&rows, keep, min_side) {
+            // The very first row is unfit, so no later one can be better: the
+            // run is cut too finely for this frame to tile legibly at all.
+            // Shed a slice of the tail and try a coarser cut — dropping
+            // everything but the biggest child would be the wrong answer for a
+            // directory full of equals.
+            Some(0) if keep > 1 => keep -= (keep / 16).max(1),
+            // A later row gives out: that row and the tail behind it are what
+            // the floor cannot afford.
+            Some(at) if keep > 1 => keep = at,
+            // `keep == 1` lays one block across the whole frame, which cannot
+            // be unfit — so this is the clean case, and the only way out.
+            _ => return rows,
+        }
+    }
+}
+
+/// The first item index the run could not place legibly: a frame with a side
+/// under the floor, or an item the frame ran out before reaching. `None` when
+/// the whole run is clean.
+fn first_unfit(rows: &[Row], keep: usize, min_side: f64) -> Option<usize> {
+    for row in rows {
+        // A row's frames all carry its short side, so this covers that too.
+        if row.frames.iter().any(|f| f.w.min(f.h) < min_side) {
+            return Some(row.start);
+        }
+    }
+    let covered = rows.last().map_or(0, Row::end);
+    (covered < keep).then_some(covered)
+}
+
+fn worst_aspect(sum: f64, max: f64, min: f64, side: f64) -> f64 {
+    let s2 = sum * sum;
+    let w2 = side * side;
+    (w2 * max / s2).max(s2 / (w2 * min))
+}
+
+/// Greedy squarification: packs `weights` into rows of near-square items,
+/// largest first. Pure geometry — `frame` is left alone and nothing is
+/// emitted, so a caller can look the result over and lay the items out again.
+fn squarify(weights: &[f64], frame: Frame) -> Vec<Row> {
+    let mut rows = Vec::new();
     let mut remaining = frame;
     let mut i = 0;
-    while i < items.len() {
+    while i < weights.len() {
         if remaining.w <= 0.0 || remaining.h <= 0.0 {
-            return;
+            break;
         }
         let side = remaining.w.min(remaining.h);
 
-        let first = items[i].1 as f64 * scale;
-        let (mut sum, mut max, mut min) = (first, first, first);
+        let (mut sum, mut max, mut min) = (weights[i], weights[i], weights[i]);
         let mut worst = worst_aspect(sum, max, min, side);
         let mut j = i + 1;
-        while j < items.len() {
-            let a = items[j].1 as f64 * scale;
+        while j < weights.len() {
+            let a = weights[j];
             let candidate = worst_aspect(sum + a, max.max(a), min.min(a), side);
             if candidate > worst {
                 break;
@@ -275,80 +386,48 @@ fn lay_children(
             j += 1;
         }
 
-        lay_row(
-            tree,
-            &items[i..j],
-            scale,
-            sum,
-            &mut remaining,
-            depth,
-            min_side,
-            opts,
-            visible,
-            out,
-        );
+        let horizontal = remaining.w < remaining.h; // the row spans the short side
+        let thickness = (sum / side).min(if horizontal { remaining.h } else { remaining.w });
+
+        let mut frames = Vec::with_capacity(j - i);
+        let mut offset = 0.0;
+        for (k, &a) in weights[i..j].iter().enumerate() {
+            // The last item takes what is left rather than its own share, so
+            // rounding cannot strand a hairline of frame at the far edge.
+            let len = if k + 1 == j - i {
+                (side - offset).max(0.0)
+            } else {
+                a / thickness
+            };
+            frames.push(if horizontal {
+                Frame {
+                    x: remaining.x + offset,
+                    y: remaining.y,
+                    w: len,
+                    h: thickness,
+                }
+            } else {
+                Frame {
+                    x: remaining.x,
+                    y: remaining.y + offset,
+                    w: thickness,
+                    h: len,
+                }
+            });
+            offset += len;
+        }
+        rows.push(Row { start: i, frames });
+
+        if horizontal {
+            remaining.y += thickness;
+            remaining.h -= thickness;
+        } else {
+            remaining.x += thickness;
+            remaining.w -= thickness;
+        }
         i = j;
     }
-}
-
-fn worst_aspect(sum: f64, max: f64, min: f64, side: f64) -> f64 {
-    let s2 = sum * sum;
-    let w2 = side * side;
-    (w2 * max / s2).max(s2 / (w2 * min))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn lay_row(
-    tree: &Tree,
-    row: &[(NodeId, u64)],
-    scale: f64,
-    row_area: f64,
-    remaining: &mut Frame,
-    depth: u8,
-    min_side: f64,
-    opts: &TreemapOptions,
-    visible: Option<&[u64]>,
-    out: &mut Vec<TreemapRect>,
-) {
-    let horizontal = remaining.w < remaining.h; // row spans the full width
-    let side = if horizontal { remaining.w } else { remaining.h };
-    let thickness = (row_area / side).min(if horizontal { remaining.h } else { remaining.w });
-
-    let mut offset = 0.0;
-    for (k, &(id, size)) in row.iter().enumerate() {
-        let len = if k == row.len() - 1 {
-            side - offset
-        } else {
-            (size as f64 * scale) / thickness
-        };
-        let frame = if horizontal {
-            Frame {
-                x: remaining.x + offset,
-                y: remaining.y,
-                w: len,
-                h: thickness,
-            }
-        } else {
-            Frame {
-                x: remaining.x,
-                y: remaining.y + offset,
-                w: thickness,
-                h: len,
-            }
-        };
-        offset += len;
-        if frame.w >= min_side && frame.h >= min_side {
-            emit(tree, id, frame, depth, opts, visible, out);
-        }
-    }
-
-    if horizontal {
-        remaining.y += thickness;
-        remaining.h -= thickness;
-    } else {
-        remaining.x += thickness;
-        remaining.w -= thickness;
-    }
+    rows
 }
 
 #[cfg(test)]
@@ -402,6 +481,92 @@ mod tests {
 
     fn area(r: &TreemapRect) -> f64 {
         r.w as f64 * r.h as f64
+    }
+
+    /// A flat directory of `n` files, all the same size.
+    fn equal_files(n: u32, size: u64) -> Tree {
+        let mut b = EntryBatch::default();
+        b.push("root", entry(0, 0, DIR, 0));
+        for i in 0..n {
+            b.push("f", entry(i + 1, 0, FILE, size));
+        }
+        let mut builder = TreeBuilder::new();
+        builder.add_batch(&b);
+        builder.finish()
+    }
+
+    /// A flat directory of one `big` file and `n` one-byte specks.
+    fn speck_tree(big: u64, n: u32) -> Tree {
+        let mut b = EntryBatch::default();
+        b.push("root", entry(0, 0, DIR, 0));
+        b.push("big", entry(1, 0, FILE, big));
+        for i in 0..n {
+            b.push("speck", entry(2 + i, 0, FILE, 1));
+        }
+        let mut builder = TreeBuilder::new();
+        builder.add_batch(&b);
+        builder.finish()
+    }
+
+    /// A three-level sample holding both dominant files and speck swarms, so
+    /// the floor has work to do at every level.
+    fn mixed_tree() -> Tree {
+        let mut b = EntryBatch::default();
+        b.push("root", entry(0, 0, DIR, 0));
+        b.push("media", entry(1, 0, DIR, 0));
+        b.push("movie", entry(2, 1, FILE, 400_000));
+        b.push("clips", entry(3, 1, DIR, 0));
+        b.push("readme", entry(4, 0, FILE, 500));
+        b.push("src", entry(5, 0, DIR, 0));
+        let mut next = 6u32;
+        for _ in 0..10 {
+            b.push("clip", entry(next, 3, FILE, 1_000));
+            next += 1;
+        }
+        for _ in 0..200 {
+            b.push("dud", entry(next, 3, FILE, 1));
+            next += 1;
+        }
+        for _ in 0..40 {
+            b.push("mod", entry(next, 5, FILE, 300));
+            next += 1;
+        }
+        for _ in 0..600 {
+            b.push("crumb", entry(next, 5, FILE, 1));
+            next += 1;
+        }
+        let mut builder = TreeBuilder::new();
+        builder.add_batch(&b);
+        builder.finish()
+    }
+
+    /// The area a directory hands to its children: its own rect less the
+    /// padding and the label strip, exactly as `emit` computes it.
+    fn body_area(dir: &TreemapRect, opts: &TreemapOptions) -> f64 {
+        let pad = opts.padding_px as f64;
+        let w = (dir.w as f64 - 2.0 * pad).max(0.0);
+        let h = (dir.h as f64 - 2.0 * pad - opts.label_px as f64).max(0.0);
+        w * h
+    }
+
+    /// Total area `dir`'s direct children were laid into. Containment is what
+    /// identifies them — it has to be, since two directories at the same depth
+    /// are both `depth + 1` away from the same root.
+    fn children_area(rects: &[TreemapRect], dir: &TreemapRect, opts: &TreemapOptions) -> f64 {
+        let pad = opts.padding_px;
+        let (x0, y0) = (dir.x + pad, dir.y + pad + opts.label_px);
+        let (x1, y1) = (dir.x + dir.w - pad, dir.y + dir.h - pad);
+        rects
+            .iter()
+            .filter(|r| {
+                r.depth == dir.depth + 1
+                    && r.x >= x0 - 0.01
+                    && r.y >= y0 - 0.01
+                    && r.x + r.w <= x1 + 0.01
+                    && r.y + r.h <= y1 + 0.01
+            })
+            .map(area)
+            .sum()
     }
 
     #[test]
@@ -538,43 +703,178 @@ mod tests {
         assert!((f.h - (dir.h - 4.0)).abs() < 0.01);
     }
 
+    /// 1,000,000 vs 1 in 100×100: the small file's share is a 100×0.0001
+    /// sliver, and it cannot buy a 1×1 block either — so it goes. Note where
+    /// its space ends up: with the others, not left blank where it was.
     #[test]
-    fn tiny_children_are_culled_without_inflating_the_rest() {
-        // 1,000,000 vs 1: in 100×100 the small file gets a 100×0.0001 sliver,
-        // too thin to be legible at any width.
-        let tree = flat_tree(&[("big", 1_000_000), ("tiny", 1)]);
+    fn a_child_below_the_floor_loses_its_share_to_the_rest() {
+        let tree = speck_tree(1_000_000, 1);
         let opts = TreemapOptions {
             min_side_px: 1.0,
-            padding_px: 0.0,
-            label_px: 0.0,
-            max_depth: 32,
-            hide_system: false,
+            ..no_padding()
         };
         let rects = layout(&tree, 0, Viewport { w: 100.0, h: 100.0 }, &opts);
 
-        assert!(rects.iter().all(|r| r.id != 2), "tiny rect must be culled");
-        let big = rect_of(&rects, 1);
-        // big keeps its proportional share; the sliver is just not drawn
-        assert!((area(&big) - 10_000.0 * (1_000_000.0 / 1_000_001.0)).abs() < 1.0);
+        assert!(rects.iter().all(|r| r.id != 2), "tiny rect must be dropped");
+        // Not its proportional share — which would leave the sliver's width
+        // blank — but the whole block.
+        assert!((area(&rect_of(&rects, 1)) - 10_000.0).abs() < 0.01);
     }
 
-    /// The floor is a side, not an area: 10,000 vs 1 in 100×100 gives the small
-    /// file a 100×0.01 slice worth a whole square pixel, which the old area
-    /// test happily drew as an invisible line.
+    /// The floor is a side, not an area: 10,000 vs 1 in 100×100 gives the
+    /// small file a 100×0.01 slice worth a whole square pixel, which an area
+    /// test passes and nobody can see.
     #[test]
-    fn a_sliver_is_culled_even_though_its_area_clears_the_floor() {
-        let tree = flat_tree(&[("big", 10_000), ("thin", 1)]);
+    fn a_sliver_cannot_hold_the_floor_and_is_dropped() {
+        let tree = speck_tree(10_000, 1);
         let opts = TreemapOptions {
             min_side_px: 2.0,
-            padding_px: 0.0,
-            label_px: 0.0,
-            max_depth: 32,
-            hide_system: false,
+            ..no_padding()
         };
         let rects = layout(&tree, 0, Viewport { w: 100.0, h: 100.0 }, &opts);
 
-        assert!(rects.iter().all(|r| r.id != 2), "sliver must be culled");
-        assert!((area(&rect_of(&rects, 1)) - 10_000.0 * (10_000.0 / 10_001.0)).abs() < 1.0);
+        assert!(rects.iter().all(|r| r.id != 2), "sliver must be dropped");
+        assert!((area(&rect_of(&rects, 1)) - 10_000.0).abs() < 0.01);
+    }
+
+    /// Positively: children whose proportional share is under the floor are
+    /// drawn at the floor anyway, and what they cover is the whole block. A
+    /// culling layout would have left this 100×100 empty.
+    #[test]
+    fn small_children_are_raised_to_the_floor_and_fill_the_block() {
+        // 300 equal files: 33px² each, under the 6px (36px²) floor.
+        let tree = equal_files(300, 1);
+        let opts = TreemapOptions {
+            min_side_px: 6.0,
+            ..no_padding()
+        };
+        let rects = layout(&tree, 0, Viewport { w: 100.0, h: 100.0 }, &opts);
+
+        let root = rect_of(&rects, 0);
+        let drawn = rects.iter().filter(|r| r.depth == 1).count();
+        // A 100×100 frame holds at most (100/6)² ≈ 277 of these. The run has
+        // to stay in that neighbourhood: shedding the tail until one block is
+        // left would also fill the frame, and would be useless.
+        assert!(drawn >= 100, "the block is tiled, not one plate: {drawn}");
+        assert!(
+            (children_area(&rects, &root, &opts) - body_area(&root, &opts)).abs() < 0.01,
+            "the children cover the block"
+        );
+        for r in rects.iter().filter(|r| r.depth == 1) {
+            assert!(
+                r.w.min(r.h) >= 6.0,
+                "id {} came out {}×{}, under the floor",
+                r.id,
+                r.w,
+                r.h
+            );
+        }
+    }
+
+    /// "All one size": siblings equally far under the floor come out equally
+    /// sized, whatever their byte counts.
+    #[test]
+    fn floored_siblings_all_get_the_same_size() {
+        let tree = equal_files(300, 1);
+        let opts = TreemapOptions {
+            min_side_px: 6.0,
+            ..no_padding()
+        };
+        let rects = layout(&tree, 0, Viewport { w: 100.0, h: 100.0 }, &opts);
+
+        let areas: Vec<f64> = rects.iter().filter(|r| r.depth == 1).map(area).collect();
+        assert!(areas.len() > 1);
+        let small = areas.iter().copied().fold(f64::MAX, f64::min);
+        let large = areas.iter().copied().fold(f64::MIN, f64::max);
+        assert!(small / large > 0.99, "sizes spread {small} to {large}");
+    }
+
+    /// The same rule on a padded, labelled frame: the child that cannot buy a
+    /// block is gone, and the one that is left covers the body exactly — the
+    /// padding and the strip are all that shows through.
+    #[test]
+    fn a_dropped_tail_leaves_no_gap() {
+        let tree = speck_tree(1_000_000, 1);
+        let opts = TreemapOptions {
+            min_side_px: 6.0,
+            padding_px: 2.0,
+            label_px: 5.0,
+            ..no_padding()
+        };
+        let rects = layout(&tree, 0, Viewport { w: 100.0, h: 100.0 }, &opts);
+
+        let root = rect_of(&rects, 0);
+        assert!(rects.iter().all(|r| r.id != 2), "tiny cannot buy a block");
+        assert!(
+            (children_area(&rects, &root, &opts) - body_area(&root, &opts)).abs() < 0.01,
+            "the survivor takes the dropped child's share too"
+        );
+    }
+
+    /// One file holding 99.985% of a 600×400 block leaves the rest able to buy
+    /// exactly one minimum block between them. Laying them out anyway squeezes
+    /// the remainder into a 0.09px column — and hit-testing walks deepest
+    /// first, so that column would answer for the whole 400px of its height.
+    #[test]
+    fn a_degenerate_tail_is_dropped_instead_of_drawn_as_a_sliver() {
+        let tree = speck_tree(999_850, 150);
+        let opts = TreemapOptions {
+            min_side_px: 6.0,
+            ..no_padding()
+        };
+        let rects = layout(&tree, 0, Viewport { w: 600.0, h: 400.0 }, &opts);
+
+        for r in &rects {
+            assert!(
+                r.w.min(r.h) >= 6.0,
+                "id {} is {}×{}, under the floor",
+                r.id,
+                r.w,
+                r.h
+            );
+        }
+        let root = rect_of(&rects, 0);
+        assert!(
+            (children_area(&rects, &root, &opts) - body_area(&root, &opts)).abs() < 0.01,
+            "dropping the tail does not open a hole"
+        );
+    }
+
+    /// The whole rule as one invariant, under the shipped options: at every
+    /// depth, every directory's children exactly cover the frame it hands
+    /// down. A gap anywhere is the bug this exists to prevent.
+    #[test]
+    fn production_options_leave_no_gaps_at_any_depth() {
+        let opts = TreemapOptions {
+            min_side_px: 6.0,
+            padding_px: 1.0,
+            label_px: 15.0,
+            max_depth: 32,
+            hide_system: false,
+        };
+        let tree = mixed_tree();
+        let rects = layout(&tree, 0, Viewport { w: 900.0, h: 600.0 }, &opts);
+
+        let dirs: Vec<TreemapRect> = rects.iter().copied().filter(|r| r.is_dir).collect();
+        assert!(dirs.len() >= 4, "the sample really does nest");
+        assert!(
+            rects.iter().any(|r| r.depth == 3),
+            "and runs deep enough for the floor to bite"
+        );
+        for dir in &dirs {
+            let kids = children_area(&rects, dir, &opts);
+            // No children means the directory stayed a plate: its body could
+            // not hold a legible block, so it never subdivided.
+            if kids == 0.0 {
+                continue;
+            }
+            let body = body_area(dir, &opts);
+            assert!(
+                (kids - body).abs() < 0.001 * body,
+                "dir {} covers {kids} of its {body}px² body",
+                dir.id
+            );
+        }
     }
 
     /// Each level takes its strip out of its own children's frame, so a nested

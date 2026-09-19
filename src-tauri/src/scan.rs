@@ -341,9 +341,11 @@ pub fn get_path(state: State<'_, AppState>, generation: u64, id: NodeId) -> Resu
     Ok(tree.path(id))
 }
 
-/// Legibility floor for a treemap rect, in CSS pixels: below this on either
-/// side the block is not drawn, so the map never fills with specks. Mirrored
-/// as `TREEMAP_MIN_SIDE_PX` in `ui/src/lib/prefs.ts`.
+/// Legibility floor for a treemap rect, in CSS pixels. A child whose share of
+/// its directory falls under this is drawn at this size anyway — a directory
+/// has to tile edge to edge, or the small stuff reads as a hole rather than as
+/// small stuff. What no longer fits at this size is dropped smallest first, so
+/// the map still never turns into a mosaic of specks.
 const TREEMAP_MIN_SIDE_PX: f32 = 6.0;
 
 /// The strip a directory reserves at the top of its interior for its label,
@@ -394,8 +396,8 @@ pub fn get_treemap(
     };
     // The label's text rides along with the geometry: a rect the user can see
     // is a rect they can read, and asking per node would be one round trip per
-    // rectangle. The culling above is what keeps the payload honest — what is
-    // sent is roughly what fits on screen, not the whole subtree.
+    // rectangle. The floor in `opts` is what keeps the payload honest — what
+    // is sent is roughly what fits on screen, not the whole subtree.
     Ok(rects
         .into_iter()
         .map(|r| TreemapRectDto {
