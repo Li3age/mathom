@@ -553,6 +553,62 @@ mod tests {
         assert!(rects.iter().all(|r| r.id != 2), "depth-2 file not emitted");
     }
 
+    /// A cap hides deeper rects without moving the ones that survive: the
+    /// capped layout is exactly the prefix of a deeper one. The UI can change
+    /// depth without reflowing a single rectangle.
+    #[test]
+    fn a_depth_cap_only_hides_deeper_rects() {
+        let tree = nested_tree();
+        let vp = Viewport { w: 400.0, h: 300.0 };
+
+        let capped = layout(&tree, 0, vp, &capped_at(2));
+        let deep: Vec<TreemapRect> = layout(&tree, 0, vp, &capped_at(8))
+            .into_iter()
+            .filter(|r| r.depth <= 2)
+            .collect();
+
+        assert_eq!(capped, deep);
+        assert!(capped.iter().any(|r| r.id == 3), "depth-2 dir is emitted");
+        assert!(capped.iter().all(|r| r.id != 5), "depth-3 dir is not");
+    }
+
+    /// Depth counts from the laid-out root, not the scan root — otherwise
+    /// drilling into a folder would leave its own children permanently out of
+    /// reach.
+    #[test]
+    fn depth_counts_from_the_laid_out_root() {
+        let tree = nested_tree();
+        let vp = Viewport { w: 400.0, h: 300.0 };
+
+        let one = layout(&tree, 1, vp, &capped_at(1));
+        assert!(one.iter().any(|r| r.id == 3), "a child of the root shows");
+        assert!(one.iter().all(|r| r.id != 5), "a grandchild does not");
+    }
+
+    /// root { d1 { d2 { d3 { f_c 50 } + f_b 100 } + f_a 200 } + f_big 400 },
+    /// so d1..d3 sit at depths 1..3 with f_c at 4.
+    fn nested_tree() -> Tree {
+        let mut b = EntryBatch::default();
+        b.push("root", entry(0, 0, DIR, 0));
+        b.push("d1", entry(1, 0, DIR, 0));
+        b.push("f_big", entry(2, 0, FILE, 400));
+        b.push("d2", entry(3, 1, DIR, 0));
+        b.push("f_a", entry(4, 1, FILE, 200));
+        b.push("d3", entry(5, 3, DIR, 0));
+        b.push("f_b", entry(6, 3, FILE, 100));
+        b.push("f_c", entry(7, 5, FILE, 50));
+        let mut builder = TreeBuilder::new();
+        builder.add_batch(&b);
+        builder.finish()
+    }
+
+    fn capped_at(max_depth: u8) -> TreemapOptions {
+        TreemapOptions {
+            max_depth,
+            ..no_padding()
+        }
+    }
+
     #[test]
     fn drill_down_layouts_from_a_subdirectory() {
         let mut b = EntryBatch::default();
