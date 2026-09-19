@@ -25,34 +25,98 @@ import {
 } from "../lib/api";
 import { isStale, reportUnlessStale } from "../lib/errors";
 import { formatBytes, formatPercent } from "../lib/format";
-import { PALETTE, canvasColors } from "../lib/palette";
+import { PALETTE, canvasColors, plateShade, textOn } from "../lib/palette";
 
 const SCAN_REFRESH_MS = 400;
 const ZOOM_MS = 220;
 const TOOLTIP_DELAY_MS = 120;
 
-// Grain tile for directory plates. By the layout's contract, culled children
-// still consume their share of space, so every bare plate pixel is real bytes
-// too small to draw — the grain makes that read as "many small files" instead
-// of dead space. Drawn tiles paint over it, so it shows only where content
-// was culled.
-const GRAIN_PITCH = 4;
+// Mirrors TREEMAP_LABEL_PX in src-tauri/src/scan.rs: the strip the layout
+// leaves free at the top of every directory, and therefore where its label has
+// to sit. If the two disagree the text lands on the children.
+const LABEL_STRIP_PX = 15;
+/** Mirrors the body font stack in index.css so canvas text matches the DOM's. */
+const LABEL_FONT = 'ui-sans-serif, system-ui, "Segoe UI", sans-serif';
+const LABEL_SIZE_PX = 11;
+/** Narrower than this and a name is not worth truncating into. */
+const LABEL_MIN_W_PX = 34;
+const LABEL_PAD_PX = 4;
 
-let grainTile: { key: string; canvas: HTMLCanvasElement } | null = null;
+/**
+ * Shortens `text` to `maxW`, with an ellipsis when it had to cut. Binary
+ * search rather than a walk in from the end: this runs for every block on
+ * every bake, and a bake runs on each scan tick.
+ */
+function fitText(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  maxW: number,
+): string {
+  if (ctx.measureText(text).width <= maxW) return text;
+  let lo = 0;
+  let hi = text.length;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (ctx.measureText(`${text.slice(0, mid)}…`).width <= maxW) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo > 0 ? `${text.slice(0, lo)}…` : "";
+}
 
-function getGrainTile(plate: string, grain: string): HTMLCanvasElement {
-  const key = `${plate}|${grain}`;
-  if (grainTile?.key === key) return grainTile.canvas;
-  const c = document.createElement("canvas");
-  c.width = GRAIN_PITCH;
-  c.height = GRAIN_PITCH;
-  const ctx = c.getContext("2d")!;
-  ctx.fillStyle = plate;
-  ctx.fillRect(0, 0, GRAIN_PITCH, GRAIN_PITCH);
-  ctx.fillStyle = grain;
-  ctx.fillRect(1, 1, 1, 1);
-  grainTile = { key, canvas: c };
-  return c;
+/**
+ * Names, drawn into the blocks themselves. A map of coloured rectangles tells
+ * you where the space went; it does not tell you what any of it is without
+ * hovering each one, and hovering every block is the work this saves.
+ *
+ * Directories are labelled in the strip the layout reserved for them, files in
+ * the middle of their block — a file has no strip, and its whole rect is free.
+ */
+function drawLabels(
+  ctx: CanvasRenderingContext2D,
+  rects: TreemapRect[],
+  dpr: number,
+  plate: string,
+) {
+  ctx.font = `${LABEL_SIZE_PX * dpr}px ${LABEL_FONT}`;
+  ctx.textBaseline = "middle";
+
+  const minW = LABEL_MIN_W_PX * dpr;
+  const pad = LABEL_PAD_PX * dpr;
+  const strip = LABEL_STRIP_PX * dpr;
+
+  ctx.textAlign = "left";
+  for (const r of rects) {
+    if (!r.isDir) continue;
+    const s = snap(r, dpr, 0);
+    // A block shorter than the strip has no strip to draw in, and a label half
+    // outside its own plate reads as a label for whatever is below it. Those
+    // are plates the layout stopped short of subdividing anyway.
+    if (s.w < minW || s.h < strip) continue;
+    ctx.fillStyle = textOn(plateShade(plate, r.depth));
+    const text = fitText(
+      ctx,
+      `${r.name} · ${formatBytes(r.size)}`,
+      s.w - 2 * pad,
+    );
+    if (text) ctx.fillText(text, s.x + pad, s.y + strip / 2);
+  }
+
+  ctx.textAlign = "center";
+  for (const r of rects) {
+    if (r.isDir) continue;
+    const s = snap(r, dpr, 1);
+    if (s.w < minW) continue;
+    ctx.fillStyle = textOn(PALETTE[r.category] ?? PALETTE[10]);
+    const name = fitText(ctx, r.name, s.w - 2 * pad);
+    if (!name) continue;
+    const cx = s.x + s.w / 2;
+    if (s.h >= 26 * dpr) {
+      ctx.fillText(name, cx, s.y + s.h / 2 - 6 * dpr);
+      ctx.fillText(formatBytes(r.size), cx, s.y + s.h / 2 + 8 * dpr);
+    } else if (s.h >= 13 * dpr) {
+      ctx.fillText(name, cx, s.y + s.h / 2);
+    }
+  }
 }
 
 let highlightSprite: HTMLCanvasElement | null = null;
@@ -244,17 +308,25 @@ export function Treemap({
     ctx.fillStyle = theme.background;
     ctx.fillRect(0, 0, off.width, off.height);
 
-    ctx.fillStyle = ctx.createPattern(
-      getGrainTile(theme.plate, theme.plateGrain),
-      "repeat",
-    )!;
-    ctx.beginPath();
+    // Directory plates, batched one path per nesting level: each level is a
+    // step further from the theme's plate colour, so a block tells you how far
+    // in it sits without needing a texture that has to be explained.
+    const byDepth: TreemapRect[][] = [];
     for (const r of rects) {
       if (!r.isDir) continue;
-      const s = snap(r, dpr, 0);
-      if (s.w > 0 && s.h > 0) ctx.rect(s.x, s.y, s.w, s.h);
+      (byDepth[r.depth] ??= []).push(r);
     }
-    ctx.fill();
+    for (let d = 0; d < byDepth.length; d++) {
+      const level = byDepth[d];
+      if (!level) continue;
+      ctx.fillStyle = plateShade(theme.plate, d);
+      ctx.beginPath();
+      for (const r of level) {
+        const s = snap(r, dpr, 0);
+        if (s.w > 0 && s.h > 0) ctx.rect(s.x, s.y, s.w, s.h);
+      }
+      ctx.fill();
+    }
 
     const buckets: TreemapRect[][] = PALETTE.map(() => []);
     for (const r of rects) {
@@ -278,6 +350,8 @@ export function Treemap({
       const s = snap(r, dpr, 1);
       if (s.w > 3 && s.h > 3) ctx.drawImage(sprite, s.x, s.y, s.w, s.h);
     }
+
+    drawLabels(ctx, rects, dpr, theme.plate);
 
     if (zoomRafRef.current === 0) blit();
   }, [blit]);

@@ -46,6 +46,9 @@ export interface TreemapRect {
   depth: number;
   isDir: boolean;
   category: number;
+  /** Drawn inside the block; see `bake` in Treemap.tsx. */
+  name: string;
+  size: number;
 }
 
 export interface Crumb {
