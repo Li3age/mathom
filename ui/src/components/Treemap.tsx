@@ -25,14 +25,7 @@ import {
 } from "../lib/api";
 import { isStale, reportUnlessStale } from "../lib/errors";
 import { formatBytes, formatPercent } from "../lib/format";
-import {
-  FOLDER_GRAIN,
-  FOLDER_PLATE,
-  FOLDER_SEAM,
-  PALETTE,
-  canvasColors,
-  textOn,
-} from "../lib/palette";
+import { FOLDER_PLATE, PALETTE, canvasColors, textOn } from "../lib/palette";
 
 const SCAN_REFRESH_MS = 400;
 const ZOOM_MS = 220;
@@ -44,30 +37,6 @@ const TOOLTIP_DELAY_MS = 120;
  * compromise: a slow double click opens first and then zooms.
  */
 const DOUBLE_CLICK_MS = 300;
-
-// Grain tile for directory plates. By the layout's contract, culled children
-// still consume their share of space, so every bare plate pixel is real bytes
-// too small to draw — the grain makes that read as "many small files" instead
-// of dead space. Drawn tiles paint over it, so it shows only where content
-// was culled.
-const GRAIN_PITCH = 4;
-
-let grainTile: { key: string; canvas: HTMLCanvasElement } | null = null;
-
-function getGrainTile(plate: string, grain: string): HTMLCanvasElement {
-  const key = `${plate}|${grain}`;
-  if (grainTile?.key === key) return grainTile.canvas;
-  const c = document.createElement("canvas");
-  c.width = GRAIN_PITCH;
-  c.height = GRAIN_PITCH;
-  const ctx = c.getContext("2d")!;
-  ctx.fillStyle = plate;
-  ctx.fillRect(0, 0, GRAIN_PITCH, GRAIN_PITCH);
-  ctx.fillStyle = grain;
-  ctx.fillRect(1, 1, 1, 1);
-  grainTile = { key, canvas: c };
-  return c;
-}
 
 /** Mirrors the body font stack in index.css so canvas text matches the DOM's. */
 const LABEL_FONT = 'ui-sans-serif, system-ui, "Segoe UI", sans-serif';
@@ -394,40 +363,26 @@ export function Treemap({
     const rects = rectsRef.current;
     const theme = canvasColors();
 
-    ctx.fillStyle = theme.background;
+    // The map's own surface, behind every block: a folder that subdivided is
+    // only the backdrop for what it contains, so it is not painted at all —
+    // this is what shows through where it would have been, and through the
+    // gaps between blocks. Its own colour, not the window's: the map is a
+    // surface with blocks on it, and it keeps that colour in both themes.
+    ctx.fillStyle = theme.plate;
     ctx.fillRect(0, 0, off.width, off.height);
 
-    ctx.fillStyle = ctx.createPattern(
-      getGrainTile(FOLDER_PLATE, FOLDER_GRAIN),
-      "repeat",
-    )!;
+    // Folders are drawn exactly like files — one flat colour, a 1px gap, the
+    // same sheen over the top — and differ only in the colour. Anything more
+    // than that (a texture, a seam, a reserved strip) makes a folder read as a
+    // surface rather than as a block, which is what a plate full of small
+    // files should look like.
+    const plates = solidPlates(rects);
+    ctx.fillStyle = FOLDER_PLATE;
     ctx.beginPath();
     for (const r of rects) {
-      if (!r.isDir) continue;
-      const s = snap(r, dpr, 0);
-      if (s.w > 0 && s.h > 0) ctx.rect(s.x, s.y, s.w, s.h);
-    }
-    ctx.fill();
-
-    // A plate with no children is the final answer for the space it covers,
-    // and it needs a seam — the grain under it is one continuous pattern, so
-    // thirty folders of equal size would otherwise draw as a single flat
-    // field with nothing to say where one ends. The seam has to be painted:
-    // the parent's plate is underneath, and a gap alone would just show more
-    // of the same texture. Plates that *do* have children are only backing
-    // for them and get nothing, or every subdivided directory would ring
-    // itself in a hairline frame.
-    ctx.fillStyle = FOLDER_SEAM;
-    ctx.beginPath();
-    for (let i = 0; i < rects.length; i++) {
-      const r = rects[i];
-      // Rects come out parents before children, so the next entry is a child
-      // exactly when it is deeper — the test for "subdivided".
-      if (!r.isDir || (rects[i + 1]?.depth ?? 0) > r.depth) continue;
+      if (!plates.has(r.id)) continue;
       const s = snap(r, dpr, 1);
-      if (s.w <= 0 || s.h <= 0) continue;
-      ctx.rect(s.x + s.w, s.y, dpr, s.h + dpr);
-      ctx.rect(s.x, s.y + s.h, s.w, dpr);
+      if (s.w > 0 && s.h > 0) ctx.rect(s.x, s.y, s.w, s.h);
     }
     ctx.fill();
 
@@ -449,7 +404,7 @@ export function Treemap({
 
     const sprite = getHighlightSprite();
     for (const r of rects) {
-      if (r.isDir) continue;
+      if (r.isDir && !plates.has(r.id)) continue;
       const s = snap(r, dpr, 1);
       if (s.w > 3 && s.h > 3) ctx.drawImage(sprite, s.x, s.y, s.w, s.h);
     }
