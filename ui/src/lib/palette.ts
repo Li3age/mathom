@@ -1,13 +1,18 @@
 /**
  * The colour of a folder block. The one category colour that is not a file
- * type, and the only dark one: a folder is a container, and a plate painted in
- * the app's own background grey made an unopened folder look like nothing was
- * there at all. Deliberately not any file colour's hue, so a container is never
- * mistaken for what it holds.
+ * type: a folder is a container, and a plate painted in the app's own
+ * background grey made an unopened folder look like nothing was there at all.
+ * Its hue is not any file colour's, so a container is never mistaken for what
+ * it holds.
+ *
+ * Picked for being a *large* area rather than a small one — folders cover more
+ * of the map than anything else, so this is the map's tone. It sits clearly
+ * above the backdrop in value, which is what makes a block read as raised
+ * instead of as a slightly different patch of background.
  *
  * It is a colour and nothing else — folders are drawn exactly like files.
  */
-export const FOLDER_PLATE = "#3b4a6b";
+export const FOLDER_PLATE = "#55618f";
 
 // Indexed by mathom-core's `Category as u8`.
 export const PALETTE: readonly string[] = [
