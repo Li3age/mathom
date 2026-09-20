@@ -30,8 +30,8 @@ import { FOLDER_PLATE, PALETTE, canvasColors, textOn } from "../lib/palette";
 const SCAN_REFRESH_MS = 400;
 const ZOOM_MS = 220;
 const TOOLTIP_DELAY_MS = 120;
-/** How long the map takes to move from one layout to the next. */
-const MORPH_MS = 180;
+/** How long the map takes to settle into a new layout. */
+const MORPH_MS = 160;
 
 /** Mirrors the body font stack in index.css so canvas text matches the DOM's. */
 const LABEL_FONT = 'ui-sans-serif, system-ui, "Segoe UI", sans-serif';
@@ -271,9 +271,9 @@ export function Treemap({
   const platesRef = useRef<Set<number>>(new Set());
   /** The one directory the user opened by hand. Mirrors `forceOpenId`. */
   const forceOpenRef = useRef<number | null>(null);
-  /** The layout being animated away from, and whose plate it opens out of. */
-  const fromRef = useRef<Map<number, TreemapRect> | null>(null);
-  const morphFromRef = useRef<number | null>(null);
+  /** The picture being dissolved away from, while a layout settles in. */
+  const wasRef = useRef<HTMLCanvasElement | null>(null);
+  const morphRef = useRef(false);
   const morphRafRef = useRef(0);
 
   const generationRef = useRef(generation);
@@ -422,52 +422,61 @@ export function Treemap({
   );
 
   /**
-   * Show the map moving from the layout it had to the one it now has, rather
-   * than cutting between them.
+   * Dissolve the layout it had into the one it now has, rather than cutting.
    *
-   * Only the *opening* of a folder is animated, and that is the case this is
-   * shaped for: the plate the user clicked takes the place of what was inside
-   * it, so every block that was already there is still there at a new size,
-   * and the blocks that appeared come out of the plate. Rects that only exist
-   * in the new layout grow from the plate's old frame — which is what a folder
-   * opening should look like, and needs no parent lookup, because everything
-   * revealed is inside that one rect by construction.
+   * A crossfade, not a movement, and that is deliberate: opening a folder adds
+   * rects *inside* the one that was clicked and moves nothing else, so the
+   * only thing that could animate is the children appearing. Growing them out
+   * of the plate looks like what it is — three hundred blocks leaving the same
+   * point at once, each with the sheen that makes a block read as raised,
+   * stacked until the middle of the plate goes white. There is nothing to
+   * travel between, so nothing travels.
    *
-   * Hit testing is frozen for the duration: the frames drawn in between are
-   * real interpolation but not a layout anything can be clicked on.
+   * The old picture is the canvas as it stands, which is why this has to
+   * happen before the new one is baked over it.
    */
   const morph = useCallback(
     (to: TreemapRect[]) => {
-      const from = fromRef.current;
-      fromRef.current = null;
-      const opened = morphFromRef.current;
-      if (!from || from.size === 0) {
+      const base = baseRef.current;
+      const off = offscreenRef.current;
+      if (!base || !off || off.width === 0) {
         bake(to);
         return;
       }
-      const origin = opened === null ? null : from.get(opened);
+      let was = wasRef.current;
+      if (!was) {
+        was = document.createElement("canvas");
+        wasRef.current = was;
+      }
+      was.width = off.width;
+      was.height = off.height;
+      was.getContext("2d")!.drawImage(off, 0, 0);
+
+      bake(to);
       const start = performance.now();
+      const ctx = base.getContext("2d")!;
       const step = () => {
         const t = Math.min(1, (performance.now() - start) / MORPH_MS);
-        const ease = 1 - (1 - t) * (1 - t);
-        const mix = (a: number, b: number) => a + (b - a) * ease;
-        const drawn = to.map((r) => {
-          const was = from.get(r.id) ?? origin;
-          if (!was) return r;
-          return {
-            ...r,
-            x: mix(was.x, r.x),
-            y: mix(was.y, r.y),
-            w: mix(was.w, r.w),
-            h: mix(was.h, r.h),
-          };
-        });
-        bake(drawn);
+        ctx.clearRect(0, 0, base.width, base.height);
+        ctx.drawImage(was!, 0, 0);
+        ctx.globalAlpha = 1 - (1 - t) * (1 - t);
+        ctx.drawImage(
+          off,
+          0,
+          0,
+          off.width,
+          off.height,
+          0,
+          0,
+          base.width,
+          base.height,
+        );
+        ctx.globalAlpha = 1;
         if (t < 1) {
           morphRafRef.current = requestAnimationFrame(step);
         } else {
           morphRafRef.current = 0;
-          bake();
+          blit();
           hitFrozenRef.current = false;
           drawOverlay();
         }
@@ -476,7 +485,7 @@ export function Treemap({
       cancelAnimationFrame(morphRafRef.current);
       morphRafRef.current = requestAnimationFrame(step);
     },
-    [bake, drawOverlay],
+    [bake, blit, drawOverlay],
   );
 
   const refreshCrumbs = useCallback(() => {
@@ -528,15 +537,16 @@ export function Treemap({
         maxDepthRef.current,
       );
       if (seq !== fetchSeqRef.current || forRoot !== rootIdRef.current) {
-        fromRef.current = null;
+        morphRef.current = false;
         return;
       }
       rectsRef.current = rects;
       byIdRef.current = new Map(rects.map((r) => [r.id, r]));
       platesRef.current = solidPlates(rects);
       setHasRects(rects.length > 0);
-      if (fromRef.current) {
+      if (morphRef.current) {
         // `morph` owns the freeze from here: it lifts it when the frames stop.
+        morphRef.current = false;
         morph(rects);
       } else {
         hitFrozenRef.current = false;
@@ -586,7 +596,7 @@ export function Treemap({
       rootIdRef.current = id;
       cancelAnimationFrame(morphRafRef.current);
       morphRafRef.current = 0;
-      fromRef.current = null;
+      morphRef.current = false;
       hitFrozenRef.current = true;
       setTooltip(null);
       mouseOverRef.current = null;
@@ -685,11 +695,11 @@ export function Treemap({
     // user clicked becomes what was inside it, so the two layouts are the same
     // blocks at different sizes, and a straight cut makes that look like a
     // different picture rather than the same one opening.
-    fromRef.current =
-      forceOpenId === null
-        ? null
-        : new Map(rectsRef.current.map((r) => [r.id, { ...r }]));
-    morphFromRef.current = forceOpenId;
+    //
+    // Nothing else gets one. A scan tick, a resize or a filter change is the
+    // map being redrawn rather than the map moving, and animating those would
+    // leave the picture permanently in motion.
+    morphRef.current = true;
     void fetchLayout();
   }, [forceOpenId, fetchLayout]);
 
