@@ -422,24 +422,38 @@ export function Treemap({
   );
 
   /**
-   * Dissolve the layout it had into the one it now has, rather than cutting.
+   * Open the plate: the folder that was clicked keeps its frame, and what is
+   * inside it grows out of that frame's centre.
    *
-   * A crossfade, not a movement, and that is deliberate: opening a folder adds
-   * rects *inside* the one that was clicked and moves nothing else, so the
-   * only thing that could animate is the children appearing. Growing them out
-   * of the plate looks like what it is — three hundred blocks leaving the same
-   * point at once, each with the sheen that makes a block read as raised,
-   * stacked until the middle of the plate goes white. There is nothing to
-   * travel between, so nothing travels.
+   * This is the one animation that fits the change. Opening a folder adds
+   * rects *inside* the one that was clicked and moves nothing else, so there
+   * is no travel to show between the old layout and the new — and the two
+   * obvious alternatives both look wrong. Moving each child out of the plate's
+   * centre stacks three hundred blocks and their sheen on one point until the
+   * middle goes white; cross-fading the two pictures leaves two different
+   * layouts ghosted over each other, which is a flicker rather than a
+   * transition, because consecutive frames share no motion.
    *
-   * The old picture is the canvas as it stands, which is why this has to
-   * happen before the new one is baked over it.
+   * Scaling the plate's contents out of its own centre is one continuous
+   * transform: every frame is the last one, slightly larger, and nothing
+   * overlaps anything it did not already overlap. It is also the same visual
+   * language as the zoom, which is the animation this one sits next to.
+   *
+   * `about` is the rect to open out of — the folder that was opened, or the
+   * one that closed. The old picture is the canvas as it stands, so this has
+   * to run before the new one is baked over it.
    */
   const morph = useCallback(
-    (to: TreemapRect[]) => {
+    (to: TreemapRect[], about: number | null) => {
       const base = baseRef.current;
       const off = offscreenRef.current;
-      if (!base || !off || off.width === 0) {
+      const dpr = window.devicePixelRatio || 1;
+      // The frame to open out of is the folder's own, looked up in the layout
+      // just received — opening leaves the folder's rect in place (its
+      // children go inside it) and closing puts the plate back, so it is
+      // there either way, and it is the frame it always had.
+      const target = about === null ? undefined : byIdRef.current.get(about);
+      if (!base || !off || off.width === 0 || !target) {
         bake(to);
         return;
       }
@@ -453,25 +467,38 @@ export function Treemap({
       was.getContext("2d")!.drawImage(off, 0, 0);
 
       bake(to);
+      const box = snap(target, dpr, 0);
+      const cx = box.x + box.w / 2;
+      const cy = box.y + box.h / 2;
       const start = performance.now();
       const ctx = base.getContext("2d")!;
       const step = () => {
         const t = Math.min(1, (performance.now() - start) / MORPH_MS);
+        const ease = 1 - (1 - t) * (1 - t);
         ctx.clearRect(0, 0, base.width, base.height);
         ctx.drawImage(was!, 0, 0);
-        ctx.globalAlpha = 1 - (1 - t) * (1 - t);
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(box.x, box.y, box.w, box.h);
+        ctx.clip();
+        ctx.translate(cx, cy);
+        ctx.scale(ease, ease);
+        ctx.translate(-cx, -cy);
+        // The folder's own patch of the new picture onto itself, under the
+        // scale — not the whole picture, which would drag the rest of the map
+        // in towards this centre along with it.
         ctx.drawImage(
           off,
-          0,
-          0,
-          off.width,
-          off.height,
-          0,
-          0,
-          base.width,
-          base.height,
+          box.x,
+          box.y,
+          box.w,
+          box.h,
+          box.x,
+          box.y,
+          box.w,
+          box.h,
         );
-        ctx.globalAlpha = 1;
+        ctx.restore();
         if (t < 1) {
           morphRafRef.current = requestAnimationFrame(step);
         } else {
@@ -547,7 +574,7 @@ export function Treemap({
       if (morphRef.current) {
         // `morph` owns the freeze from here: it lifts it when the frames stop.
         morphRef.current = false;
-        morph(rects);
+        morph(rects, aboutRef.current);
       } else {
         hitFrozenRef.current = false;
         bake();
@@ -582,10 +609,13 @@ export function Treemap({
    * in front of it that read as nothing having happened.
    */
   const lastClickRef = useRef<number | null>(null);
+  /** The folder the pending layout change is about, for the animation. */
+  const aboutRef = useRef<number | null>(null);
 
   /** Open (or close) the folder the click landed on, right away. */
   const setOpen = useCallback((id: number | null) => {
     lastClickRef.current = id;
+    aboutRef.current = id ?? forceOpenRef.current;
     setForceOpenId(id);
   }, []);
 
