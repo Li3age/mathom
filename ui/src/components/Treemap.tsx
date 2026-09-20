@@ -30,13 +30,8 @@ import { FOLDER_PLATE, PALETTE, canvasColors, textOn } from "../lib/palette";
 const SCAN_REFRESH_MS = 400;
 const ZOOM_MS = 220;
 const TOOLTIP_DELAY_MS = 120;
-/**
- * How long a click on a plate waits to find out whether it was half of a
- * double click. Chromium reports the second click at the platform's interval,
- * which defaults to 500ms — too long to hold every open for, so this is the
- * compromise: a slow double click opens first and then zooms.
- */
-const DOUBLE_CLICK_MS = 300;
+/** How long the map takes to move from one layout to the next. */
+const MORPH_MS = 180;
 
 /** Mirrors the body font stack in index.css so canvas text matches the DOM's. */
 const LABEL_FONT = 'ui-sans-serif, system-ui, "Segoe UI", sans-serif';
@@ -276,10 +271,10 @@ export function Treemap({
   const platesRef = useRef<Set<number>>(new Set());
   /** The one directory the user opened by hand. Mirrors `forceOpenId`. */
   const forceOpenRef = useRef<number | null>(null);
-  /** A click waiting out the double-click window, and its sequence number. */
-  const pendingRef = useRef<{ id: number; collapse: boolean } | null>(null);
-  const pendingSeqRef = useRef(0);
-  const pendingTimerRef = useRef(0);
+  /** The layout being animated away from, and whose plate it opens out of. */
+  const fromRef = useRef<Map<number, TreemapRect> | null>(null);
+  const morphFromRef = useRef<number | null>(null);
+  const morphRafRef = useRef(0);
 
   const generationRef = useRef(generation);
   generationRef.current = generation;
@@ -357,71 +352,132 @@ export function Treemap({
     drawOverlay();
   }, [drawOverlay]);
 
-  const bake = useCallback(() => {
-    const base = baseRef.current;
-    if (!base || base.width === 0) return;
-    let off = offscreenRef.current;
-    if (!off) {
-      off = document.createElement("canvas");
-      offscreenRef.current = off;
-    }
-    off.width = base.width;
-    off.height = base.height;
-    const ctx = off.getContext("2d")!;
-    const dpr = window.devicePixelRatio || 1;
-    const rects = rectsRef.current;
-    const theme = canvasColors();
+  const bake = useCallback(
+    (drawn: TreemapRect[] = rectsRef.current) => {
+      const base = baseRef.current;
+      if (!base || base.width === 0) return;
+      let off = offscreenRef.current;
+      if (!off) {
+        off = document.createElement("canvas");
+        offscreenRef.current = off;
+      }
+      off.width = base.width;
+      off.height = base.height;
+      const ctx = off.getContext("2d")!;
+      const dpr = window.devicePixelRatio || 1;
+      const rects = drawn;
+      const theme = canvasColors();
 
-    // The map's own surface, behind every block: a folder that subdivided is
-    // only the backdrop for what it contains, so it is not painted at all —
-    // this is what shows through where it would have been, and through the
-    // gaps between blocks. Its own colour, not the window's: the map is a
-    // surface with blocks on it, and it keeps that colour in both themes.
-    ctx.fillStyle = theme.plate;
-    ctx.fillRect(0, 0, off.width, off.height);
+      // The map's own surface, behind every block: a folder that subdivided is
+      // only the backdrop for what it contains, so it is not painted at all —
+      // this is what shows through where it would have been, and through the
+      // gaps between blocks. Its own colour, not the window's: the map is a
+      // surface with blocks on it, and it keeps that colour in both themes.
+      ctx.fillStyle = theme.plate;
+      ctx.fillRect(0, 0, off.width, off.height);
 
-    // Folders are drawn exactly like files — one flat colour, a 1px gap, the
-    // same sheen over the top — and differ only in the colour. Anything more
-    // than that (a texture, a seam, a reserved strip) makes a folder read as a
-    // surface rather than as a block, which is what a plate full of small
-    // files should look like.
-    const plates = solidPlates(rects);
-    ctx.fillStyle = FOLDER_PLATE;
-    ctx.beginPath();
-    for (const r of rects) {
-      if (!plates.has(r.id)) continue;
-      const s = snap(r, dpr, 1);
-      if (s.w > 0 && s.h > 0) ctx.rect(s.x, s.y, s.w, s.h);
-    }
-    ctx.fill();
-
-    const buckets: TreemapRect[][] = PALETTE.map(() => []);
-    for (const r of rects) {
-      if (!r.isDir) buckets[r.category]?.push(r);
-    }
-    for (let c = 0; c < buckets.length; c++) {
-      const bucket = buckets[c];
-      if (bucket.length === 0) continue;
-      ctx.fillStyle = PALETTE[c];
+      // Folders are drawn exactly like files — one flat colour, a 1px gap, the
+      // same sheen over the top — and differ only in the colour. Anything more
+      // than that (a texture, a seam, a reserved strip) makes a folder read as a
+      // surface rather than as a block, which is what a plate full of small
+      // files should look like.
+      const plates = solidPlates(rects);
+      ctx.fillStyle = FOLDER_PLATE;
       ctx.beginPath();
-      for (const r of bucket) {
+      for (const r of rects) {
+        if (!plates.has(r.id)) continue;
         const s = snap(r, dpr, 1);
         if (s.w > 0 && s.h > 0) ctx.rect(s.x, s.y, s.w, s.h);
       }
       ctx.fill();
-    }
 
-    const sprite = getHighlightSprite();
-    for (const r of rects) {
-      if (r.isDir && !plates.has(r.id)) continue;
-      const s = snap(r, dpr, 1);
-      if (s.w > 3 && s.h > 3) ctx.drawImage(sprite, s.x, s.y, s.w, s.h);
-    }
+      const buckets: TreemapRect[][] = PALETTE.map(() => []);
+      for (const r of rects) {
+        if (!r.isDir) buckets[r.category]?.push(r);
+      }
+      for (let c = 0; c < buckets.length; c++) {
+        const bucket = buckets[c];
+        if (bucket.length === 0) continue;
+        ctx.fillStyle = PALETTE[c];
+        ctx.beginPath();
+        for (const r of bucket) {
+          const s = snap(r, dpr, 1);
+          if (s.w > 0 && s.h > 0) ctx.rect(s.x, s.y, s.w, s.h);
+        }
+        ctx.fill();
+      }
 
-    if (labelsRef.current) drawLabels(ctx, rects, dpr);
+      const sprite = getHighlightSprite();
+      for (const r of rects) {
+        if (r.isDir && !plates.has(r.id)) continue;
+        const s = snap(r, dpr, 1);
+        if (s.w > 3 && s.h > 3) ctx.drawImage(sprite, s.x, s.y, s.w, s.h);
+      }
 
-    if (zoomRafRef.current === 0) blit();
-  }, [blit]);
+      if (labelsRef.current) drawLabels(ctx, rects, dpr);
+
+      if (zoomRafRef.current === 0) blit();
+    },
+    [blit],
+  );
+
+  /**
+   * Show the map moving from the layout it had to the one it now has, rather
+   * than cutting between them.
+   *
+   * Only the *opening* of a folder is animated, and that is the case this is
+   * shaped for: the plate the user clicked takes the place of what was inside
+   * it, so every block that was already there is still there at a new size,
+   * and the blocks that appeared come out of the plate. Rects that only exist
+   * in the new layout grow from the plate's old frame — which is what a folder
+   * opening should look like, and needs no parent lookup, because everything
+   * revealed is inside that one rect by construction.
+   *
+   * Hit testing is frozen for the duration: the frames drawn in between are
+   * real interpolation but not a layout anything can be clicked on.
+   */
+  const morph = useCallback(
+    (to: TreemapRect[]) => {
+      const from = fromRef.current;
+      fromRef.current = null;
+      const opened = morphFromRef.current;
+      if (!from || from.size === 0) {
+        bake(to);
+        return;
+      }
+      const origin = opened === null ? null : from.get(opened);
+      const start = performance.now();
+      const step = () => {
+        const t = Math.min(1, (performance.now() - start) / MORPH_MS);
+        const ease = 1 - (1 - t) * (1 - t);
+        const mix = (a: number, b: number) => a + (b - a) * ease;
+        const drawn = to.map((r) => {
+          const was = from.get(r.id) ?? origin;
+          if (!was) return r;
+          return {
+            ...r,
+            x: mix(was.x, r.x),
+            y: mix(was.y, r.y),
+            w: mix(was.w, r.w),
+            h: mix(was.h, r.h),
+          };
+        });
+        bake(drawn);
+        if (t < 1) {
+          morphRafRef.current = requestAnimationFrame(step);
+        } else {
+          morphRafRef.current = 0;
+          bake();
+          hitFrozenRef.current = false;
+          drawOverlay();
+        }
+      };
+      hitFrozenRef.current = true;
+      cancelAnimationFrame(morphRafRef.current);
+      morphRafRef.current = requestAnimationFrame(step);
+    },
+    [bake, drawOverlay],
+  );
 
   const refreshCrumbs = useCallback(() => {
     const generation = generationRef.current;
@@ -471,13 +527,21 @@ export function Treemap({
         forceOpenRef.current,
         maxDepthRef.current,
       );
-      if (seq !== fetchSeqRef.current || forRoot !== rootIdRef.current) return;
+      if (seq !== fetchSeqRef.current || forRoot !== rootIdRef.current) {
+        fromRef.current = null;
+        return;
+      }
       rectsRef.current = rects;
       byIdRef.current = new Map(rects.map((r) => [r.id, r]));
       platesRef.current = solidPlates(rects);
-      hitFrozenRef.current = false;
       setHasRects(rects.length > 0);
-      bake();
+      if (fromRef.current) {
+        // `morph` owns the freeze from here: it lifts it when the frames stop.
+        morph(rects);
+      } else {
+        hitFrozenRef.current = false;
+        bake();
+      }
       if (crumbsRootRef.current !== forRoot) refreshCrumbs();
       // The folder the user opened is open — but if the biggest thing in it
       // still came out too small to read, opening it in place achieved
@@ -498,37 +562,21 @@ export function Treemap({
       reportUnlessStale("loading treemap", e);
       if (seq === fetchSeqRef.current) hitFrozenRef.current = false;
     }
-  }, [bake, refreshCrumbs, onNavigate]);
+  }, [bake, refreshCrumbs, onNavigate, morph]);
 
   /**
-   * A click on a plate is ambiguous until the double-click window closes: it
-   * could be "open this" or the first half of "zoom into this". So that one
-   * action waits, and only that one — everything else acts on the spot, and
-   * `handleDoubleClick` cancels what is waiting. `pendingRef` doubles as the
-   * flag: it is non-null exactly while a click has yet to be acted on.
+   * What the last click did, for the double click to read. There is no timer
+   * any more: a click on a plate opens it right away, and the *second* click
+   * of a double click zooms instead of waiting to find out. Waiting was worse
+   * than either — the open felt slow, and the zoom that followed had a pause
+   * in front of it that read as nothing having happened.
    */
-  const arm = useCallback((id: number, collapse: boolean) => {
-    window.clearTimeout(pendingTimerRef.current);
-    const seq = ++pendingSeqRef.current;
-    const generation = generationRef.current;
-    const forRoot = rootIdRef.current;
-    pendingRef.current = { id, collapse };
-    pendingTimerRef.current = window.setTimeout(() => {
-      if (seq !== pendingSeqRef.current) return;
-      // A scan tick re-fetching underneath us is not a reason to drop the
-      // click — the id is what the action applies to, and those are stable
-      // within a generation. Leaving the tree or starting a new scan is.
-      if (generation !== generationRef.current) return;
-      if (forRoot !== rootIdRef.current) return;
-      if (!byIdRef.current.has(id)) return;
-      setForceOpenId(collapse ? null : id);
-    }, DOUBLE_CLICK_MS);
-  }, []);
+  const lastClickRef = useRef<number | null>(null);
 
-  const cancelPending = useCallback(() => {
-    pendingRef.current = null;
-    window.clearTimeout(pendingTimerRef.current);
-    pendingSeqRef.current++;
+  /** Open (or close) the folder the click landed on, right away. */
+  const setOpen = useCallback((id: number | null) => {
+    lastClickRef.current = id;
+    setForceOpenId(id);
   }, []);
 
   const drillTo = useCallback(
@@ -536,10 +584,12 @@ export function Treemap({
       if (id === rootIdRef.current) return;
       const zoomFrom = byIdRef.current.get(id);
       rootIdRef.current = id;
+      cancelAnimationFrame(morphRafRef.current);
+      morphRafRef.current = 0;
+      fromRef.current = null;
       hitFrozenRef.current = true;
       setTooltip(null);
       mouseOverRef.current = null;
-      cancelPending();
       // The open folder follows the view only into itself. Zooming into it
       // should show what is inside — without this it would arrive as the root
       // and be folded back into one plate by the same rule that folded it
@@ -580,7 +630,7 @@ export function Treemap({
 
       void fetchLayout();
     },
-    [blit, drawOverlay, fetchLayout, cancelPending],
+    [blit, drawOverlay, fetchLayout],
   );
 
   useEffect(() => {
@@ -602,14 +652,11 @@ export function Treemap({
     offscreenRef.current = null;
     // Ids belong to a tree, and this is a different one. Holding an open
     // folder across scans would open whatever now happens to have that id.
-    cancelPending();
     setForceOpenId(null);
     const base = baseRef.current;
     if (base) base.getContext("2d")!.clearRect(0, 0, base.width, base.height);
     if (generation !== 0) void fetchLayout();
-  }, [generation, fetchLayout, cancelPending]);
-
-  useEffect(() => cancelPending, [cancelPending]);
+  }, [generation, fetchLayout]);
 
   useEffect(() => {
     drawOverlay();
@@ -633,6 +680,16 @@ export function Treemap({
     // backend can decide what a directory hides. Read through the ref inside
     // `fetchLayout`, keyed on the value here — the callback's identity has to
     // stay put, or this cascades into the size effect and double-fetches.
+    //
+    // Opening is the one change worth showing as a movement: the plate the
+    // user clicked becomes what was inside it, so the two layouts are the same
+    // blocks at different sizes, and a straight cut makes that look like a
+    // different picture rather than the same one opening.
+    fromRef.current =
+      forceOpenId === null
+        ? null
+        : new Map(rectsRef.current.map((r) => [r.id, { ...r }]));
+    morphFromRef.current = forceOpenId;
     void fetchLayout();
   }, [forceOpenId, fetchLayout]);
 
@@ -808,10 +865,11 @@ export function Treemap({
       const bounds = containerRef.current!.getBoundingClientRect();
       const hit = hitTest(e.clientX - bounds.left, e.clientY - bounds.top);
       if (!hit) return;
+      lastClickRef.current = null;
       // The folder that is open is the one case a click closes: it has
       // children now, so nothing below would offer to.
       if (hit.id === forceOpenRef.current) {
-        arm(hit.id, true);
+        setOpen(null);
         return;
       }
       onSelect(hit);
@@ -823,14 +881,14 @@ export function Treemap({
         maxDepthRef.current === null &&
         platesRef.current.has(hit.id)
       ) {
-        arm(hit.id, false);
+        setOpen(hit.id);
         return;
       }
       // A directory the layout did choose to subdivide: single click zooms, as
       // it always has.
       if (hit.isDir) onNavigate(hit.id);
     },
-    [hitTest, onSelect, onNavigate, arm],
+    [hitTest, onSelect, onNavigate, setOpen],
   );
 
   const handleContextMenu = useCallback(
@@ -849,20 +907,16 @@ export function Treemap({
     [hitTest, regionAt, crumbs, onContext],
   );
 
-  const handleDoubleClick = useCallback(
-    (e: React.MouseEvent) => {
-      const bounds = containerRef.current!.getBoundingClientRect();
-      const hit = hitTest(e.clientX - bounds.left, e.clientY - bounds.top);
-      if (!hit?.isDir || hit.id === rootIdRef.current) return;
-      // Nothing waiting means the first click already acted — it zoomed, or it
-      // selected a file — and a second zoom on top of that is not what anyone
-      // asked for.
-      if (pendingRef.current === null) return;
-      cancelPending();
-      onNavigate(hit.id);
-    },
-    [hitTest, onNavigate, cancelPending],
-  );
+  const handleDoubleClick = useCallback(() => {
+    // The double click zooms the folder the *first* click opened. Not the rect
+    // under the cursor: by the time the second click lands, the layout has
+    // been replaced by what that folder held, so the cursor is over one of its
+    // children — or over nothing, since the frames of the opening animation
+    // are not a layout anyone can point at.
+    const opened = lastClickRef.current;
+    if (opened === null || opened === rootIdRef.current) return;
+    onNavigate(opened);
+  }, [onNavigate]);
 
   const zoomOut = useCallback(() => {
     if (crumbs.length < 2 || hitFrozenRef.current) return;
