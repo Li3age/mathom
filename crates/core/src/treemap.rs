@@ -53,6 +53,17 @@ pub struct TreemapOptions {
 /// child would still be a speck says more as one plate.
 const DETAIL_FACTOR: f64 = 2.0;
 
+/// How many direct children a directory may have before the layout folds it
+/// into one plate by default.
+///
+/// Counting visible children, not descendants: what the layout has to place at
+/// this level is its own children, and a folder of three folders holding a
+/// thousand files each is three blocks here, not a thousand. Well past this
+/// the blocks stop being things you can point at — even at 6px, a plate this
+/// subdivided is a texture — and a plate you can click is the better answer.
+/// Clicking is the ask that overrides it.
+const MAX_DIRECT_CHILDREN: usize = 200;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TreemapRect {
     pub id: NodeId,
@@ -72,7 +83,7 @@ pub fn layout(
     viewport: Viewport,
     opts: &TreemapOptions,
 ) -> Vec<TreemapRect> {
-    layout_impl(tree, root, viewport, opts, None)
+    layout_impl(tree, root, viewport, opts, None, &[])
 }
 
 /// Layout under a view filter: per-node effective bytes (0 = omit), as
@@ -85,7 +96,42 @@ pub fn layout_with_filter(
     opts: &TreemapOptions,
     bytes: &[u64],
 ) -> Vec<TreemapRect> {
-    layout_impl(tree, root, viewport, opts, Some(bytes))
+    layout_impl(tree, root, viewport, opts, Some(bytes), &[])
+}
+
+/// Layout with a directory forced open — the one the user asked to see inside
+/// of, whatever the legibility rules made of it.
+///
+/// `force_open` names the *deepest* directory to open, and the chain from it
+/// up to `root` opens with it. One value therefore carries the whole
+/// accordion: asking for a directory outside the open one leaves the old one
+/// off the chain (so it closes), and asking for one inside keeps it on (so it
+/// stays). An id that is not in this subtree, or no longer names a live
+/// directory, is not an error — it simply opens nothing.
+pub fn layout_with_force(
+    tree: &Tree,
+    root: NodeId,
+    viewport: Viewport,
+    opts: &TreemapOptions,
+    filter: Option<&[u64]>,
+    force_open: Option<NodeId>,
+) -> Vec<TreemapRect> {
+    let mut chain = Vec::new();
+    if let Some(mut cur) = force_open.filter(|&id| tree.is_live(id) && tree.node(id).is_dir()) {
+        while cur != root {
+            chain.push(cur);
+            match tree.node(cur).parent() {
+                // Walked off the top without meeting the root: the node is in
+                // another branch, so there is nothing here to open. (The tree
+                // root can report itself as its own parent, hence the second
+                // arm — without it this would spin.)
+                Some(parent) if parent != cur => cur = parent,
+                _ => return layout_impl(tree, root, viewport, opts, filter, &[]),
+            }
+        }
+        chain.push(root);
+    }
+    layout_impl(tree, root, viewport, opts, filter, &chain)
 }
 
 fn layout_impl(
@@ -94,6 +140,7 @@ fn layout_impl(
     viewport: Viewport,
     opts: &TreemapOptions,
     filter: Option<&[u64]>,
+    open: &[NodeId],
 ) -> Vec<TreemapRect> {
     let mut out = Vec::new();
     if tree.is_empty() || (root as usize) >= tree.len() || viewport.w <= 0.0 || viewport.h <= 0.0 {
@@ -116,7 +163,7 @@ fn layout_impl(
         }
         None => None,
     };
-    emit(tree, root, frame, 0, opts, visible, &mut out);
+    emit(tree, root, frame, 0, opts, visible, open, &mut out);
     out
 }
 
@@ -182,6 +229,10 @@ impl Frame {
     }
 }
 
+// `open` is threaded down the recursion rather than carried in a context
+// struct: it is one slice, and every function here already passes the same six
+// things along.
+#[allow(clippy::too_many_arguments)]
 fn emit(
     tree: &Tree,
     id: NodeId,
@@ -189,6 +240,7 @@ fn emit(
     depth: u8,
     opts: &TreemapOptions,
     visible: Option<&[u64]>,
+    open: &[NodeId],
     out: &mut Vec<TreemapRect>,
 ) {
     let node = tree.node(id);
@@ -202,6 +254,12 @@ fn emit(
         is_dir: node.is_dir(),
         category: categorize(tree.name(id), node.is_dir()) as u8,
     });
+    // `open` — the directories the user asked to see inside of — is consulted
+    // only at `lay_children`'s two gates, both of which return before a single
+    // child is placed. It never reaches `items`, `scale`, `fit` or a frame, so
+    // opening a directory adds rects under it and moves nothing: a forced
+    // layout is a *superset* of the unforced one, not merely a different one.
+    // That is what lets the map expand in place without a jump.
     if !node.is_dir() || depth >= opts.max_depth {
         return;
     }
@@ -220,13 +278,15 @@ fn emit(
     // every side of every grandchild, so a branch runs out of room on its own
     // and stops. (`lay_children` applies the first half — whether the biggest
     // child here is worth a level at all.) `max_depth` is only an upper bound
-    // on top of that.
+    // on top of that, and it is the one bound forcing does *not* lift: it is
+    // the only brake on recursion, and the tree's depth is unbounded.
     if inner.w < opts.min_side_px as f64 || inner.h < opts.min_side_px as f64 {
         return;
     }
-    lay_children(tree, id, inner, depth + 1, opts, visible, out);
+    lay_children(tree, id, inner, depth + 1, opts, visible, open, out);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn lay_children(
     tree: &Tree,
     dir: NodeId,
@@ -234,8 +294,10 @@ fn lay_children(
     depth: u8,
     opts: &TreemapOptions,
     visible: Option<&[u64]>,
+    open: &[NodeId],
     out: &mut Vec<TreemapRect>,
 ) {
+    let forced = open.contains(&dir);
     let mut items: Vec<(NodeId, u64)> = tree
         .children(dir)
         .map(|c| (c, effective_size(tree, c, visible)))
@@ -244,22 +306,37 @@ fn lay_children(
     if items.is_empty() {
         return;
     }
-    items.sort_unstable_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-
-    let total: f64 = items.iter().map(|&(_, s)| s as f64).sum();
-    let area = frame.area();
-    let scale = area / total;
     let min_side = opts.min_side_px as f64;
-
-    // Adaptive depth, first half. A level is worth having only if the biggest
-    // thing in here comes out well clear of the floor: otherwise the
-    // subdivision is a mosaic of specks that says no more than the plate it
-    // replaces did, and it says it one folder deeper every time. Items are
-    // sorted, so the first is the biggest.
-    let detail = min_side * DETAIL_FACTOR;
-    if min_side > 0.0 && items[0].1 as f64 * scale < detail * detail {
-        return;
+    let mut total = 0.0f64;
+    let mut biggest = 0u64;
+    for &(_, size) in &items {
+        total += size as f64;
+        biggest = biggest.max(size);
     }
+    let scale = frame.area() / total;
+
+    // Adaptive depth, first half — the two reasons a level is not worth
+    // drawing. Both are policy rather than geometry, hence the `min_side > 0`
+    // guard: zero means "no floor, lay it out as it is", which is what the
+    // exact-geometry tests ask for and what makes those reasons moot. Neither
+    // applies to a directory the user opened by hand; that ask outranks them.
+    if !forced && min_side > 0.0 {
+        // Counted from the visible children rather than `tree.children`,
+        // because under a filter or hide_system what matters is how many
+        // blocks would actually be drawn. Ahead of the sort, so a directory
+        // this is meant to keep off the map never pays to order it.
+        if items.len() > MAX_DIRECT_CHILDREN {
+            return;
+        }
+        // The biggest thing in here would come out a speck: the subdivision
+        // says no more than the plate it replaces did, and says it one folder
+        // deeper every time.
+        let detail = min_side * DETAIL_FACTOR;
+        if biggest as f64 * scale < detail * detail {
+            return;
+        }
+    }
+    items.sort_unstable_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
 
     let rows = if min_side <= 0.0 {
         // No floor to honour: strictly proportional, nothing to refit.
@@ -286,7 +363,16 @@ fn lay_children(
 
     for row in &rows {
         for (k, f) in row.frames.iter().enumerate() {
-            emit(tree, items[row.start + k].0, *f, depth, opts, visible, out);
+            emit(
+                tree,
+                items[row.start + k].0,
+                *f,
+                depth,
+                opts,
+                visible,
+                open,
+                out,
+            );
         }
     }
 }
@@ -522,7 +608,7 @@ mod tests {
             b.push("clip", entry(next, 3, FILE, 1_000));
             next += 1;
         }
-        for _ in 0..200 {
+        for _ in 0..150 {
             b.push("dud", entry(next, 3, FILE, 1));
             next += 1;
         }
@@ -530,7 +616,7 @@ mod tests {
             b.push("mod", entry(next, 5, FILE, 300));
             next += 1;
         }
-        for _ in 0..600 {
+        for _ in 0..150 {
             b.push("crumb", entry(next, 5, FILE, 1));
             next += 1;
         }
@@ -942,6 +1028,267 @@ mod tests {
         assert!(opts.max_depth > 1, "the cap never came into it");
     }
 
+    /// The child limit, from both sides of it. The viewport is far too big for
+    /// the legibility gate to be what folds either one — 200 equal children in
+    /// 600×600 is 1800px² each — so only the count can be doing it.
+    #[test]
+    fn more_direct_children_than_the_limit_stay_a_plate() {
+        let vp = Viewport { w: 600.0, h: 600.0 };
+        let opts = floored(6.0);
+
+        let under = layout(&equal_files(MAX_DIRECT_CHILDREN as u32, 1), 0, vp, &opts);
+        assert!(under.len() > 1, "the limit itself is still drawn");
+
+        let over = layout(
+            &equal_files(MAX_DIRECT_CHILDREN as u32 + 1, 1),
+            0,
+            vp,
+            &opts,
+        );
+        assert_eq!(over.len(), 1, "one plate once it is over");
+    }
+
+    /// What the limit counts is children that would be *drawn*. Hiding the
+    /// system files takes this directory from 250 of them to 50, which is back
+    /// under the limit, so it opens again.
+    #[test]
+    fn the_child_limit_counts_visible_direct_children() {
+        let mut b = EntryBatch::default();
+        b.push("root", entry(0, 0, DIR, 0));
+        let mut next = 1u32;
+        for _ in 0..50 {
+            b.push("keep", entry(next, 0, FILE, 1000));
+            next += 1;
+        }
+        for _ in 0..200 {
+            b.push("sys", entry(next, 0, EntryFlags::SYSTEM, 1000));
+            next += 1;
+        }
+        let mut builder = TreeBuilder::new();
+        builder.add_batch(&b);
+        let tree = builder.finish();
+
+        let vp = Viewport { w: 600.0, h: 600.0 };
+        assert_eq!(
+            layout(&tree, 0, vp, &floored(6.0)).len(),
+            1,
+            "250 of them is over the limit"
+        );
+        let hidden = TreemapOptions {
+            hide_system: true,
+            ..floored(6.0)
+        };
+        assert!(
+            layout(&tree, 0, vp, &hidden).len() > 1,
+            "50 visible ones is not"
+        );
+    }
+
+    /// Descendants are not children. Three folders holding thousands of files
+    /// between them is three blocks at this level, and the limit has nothing
+    /// to say about it.
+    #[test]
+    fn the_child_limit_counts_children_not_descendants() {
+        let mut b = EntryBatch::default();
+        b.push("root", entry(0, 0, DIR, 0));
+        for d in 0..3u32 {
+            b.push("dir", entry(1 + d, 0, DIR, 0));
+        }
+        let mut next = 4u32;
+        for d in 0..3u32 {
+            for _ in 0..700 {
+                b.push("f", entry(next, 1 + d, FILE, 1));
+                next += 1;
+            }
+        }
+        let mut builder = TreeBuilder::new();
+        builder.add_batch(&b);
+        let tree = builder.finish();
+
+        let rects = layout(&tree, 0, Viewport { w: 600.0, h: 600.0 }, &floored(6.0));
+
+        assert_eq!(
+            rects.iter().filter(|r| r.depth == 1).count(),
+            3,
+            "three folders, whatever is inside them"
+        );
+    }
+
+    /// The ask: a plate the legibility rules made is still openable by hand.
+    #[test]
+    fn forcing_a_plate_open_reveals_what_the_floor_hid() {
+        let tree = legibility_gated_plate(200);
+        let vp = Viewport { w: 400.0, h: 400.0 };
+        let opts = floored(6.0);
+
+        let base = layout(&tree, 0, vp, &opts);
+        assert!(
+            base.iter().all(|r| r.depth < 2),
+            "the plate really is a plate"
+        );
+
+        let forced = layout_with_force(&tree, 0, vp, &opts, None, Some(2));
+        assert!(
+            forced.iter().any(|r| r.depth == 2),
+            "and it opens when asked"
+        );
+    }
+
+    /// Opening a directory must not *move* anything, or the map would jump the
+    /// moment it was clicked. A forced layout is a superset of the unforced
+    /// one: same rects, same frames, plus whatever the override revealed.
+    /// (That the revealed children sit inside their parent is a separate
+    /// question — `parents_are_emitted_before_children_and_contain_them`.)
+    #[test]
+    fn forcing_a_plate_open_moves_no_rect_it_does_not_reveal() {
+        let tree = legibility_gated_plate(200);
+        let vp = Viewport { w: 400.0, h: 400.0 };
+        let opts = floored(6.0);
+
+        let base = layout(&tree, 0, vp, &opts);
+        let forced = layout_with_force(&tree, 0, vp, &opts, None, Some(2));
+
+        // Both legs matter: without the first, an override that did nothing at
+        // all would satisfy the comparison.
+        assert!(
+            base.iter().all(|r| r.depth < 2),
+            "the plate really is a plate"
+        );
+        assert!(forced.len() > base.len(), "and forcing really does open it");
+
+        let seen: std::collections::HashSet<NodeId> = base.iter().map(|r| r.id).collect();
+        let shared: Vec<TreemapRect> = forced
+            .iter()
+            .copied()
+            .filter(|r| seen.contains(&r.id))
+            .collect();
+        assert_eq!(base, shared, "the rects that were already there held still");
+    }
+
+    /// The accordion, at the layout level: the node asked for opens, and so
+    /// does everything between it and the root that was hiding it. Without
+    /// that, asking for a folder inside a folded folder would open nothing.
+    #[test]
+    fn forcing_an_inside_node_opens_the_ancestors_it_hides_behind() {
+        let mut b = EntryBatch::default();
+        b.push("root", entry(0, 0, DIR, 0));
+        b.push("outer", entry(1, 0, DIR, 0));
+        b.push("inner", entry(2, 1, DIR, 0));
+        let mut next = 3u32;
+        for _ in 0..8 {
+            b.push("leaf", entry(next, 2, FILE, 1000));
+            next += 1;
+        }
+        for _ in 0..200 {
+            b.push("f", entry(next, 1, FILE, 1));
+            next += 1;
+        }
+        let mut builder = TreeBuilder::new();
+        builder.add_batch(&b);
+        let tree = builder.finish();
+
+        let vp = Viewport { w: 600.0, h: 600.0 };
+        let opts = floored(6.0);
+        let base = layout(&tree, 0, vp, &opts);
+        assert!(base.iter().all(|r| r.depth < 2), "outer is folded");
+
+        let forced = layout_with_force(&tree, 0, vp, &opts, None, Some(2));
+        assert!(forced.iter().any(|r| r.depth == 2), "outer opened too");
+        assert!(forced.iter().any(|r| r.depth == 3), "and inner with it");
+    }
+
+    /// A node in another branch is not ours to open.
+    #[test]
+    fn forcing_a_node_outside_the_layout_root_changes_nothing() {
+        let mut b = EntryBatch::default();
+        b.push("root", entry(0, 0, DIR, 0));
+        b.push("a", entry(1, 0, DIR, 0));
+        b.push("af", entry(2, 1, FILE, 500));
+        b.push("b", entry(3, 0, DIR, 0));
+        b.push("bf", entry(4, 3, FILE, 500));
+        let mut builder = TreeBuilder::new();
+        builder.add_batch(&b);
+        let tree = builder.finish();
+
+        let vp = Viewport { w: 300.0, h: 300.0 };
+        let opts = floored(6.0);
+        let plain = layout(&tree, 1, vp, &opts);
+        let forced = layout_with_force(&tree, 1, vp, &opts, None, Some(3));
+
+        assert_eq!(plain, forced, "another branch is not in this layout");
+    }
+
+    /// Opening something that was already open is not an event. `mid` fills
+    /// the viewport on its own here, so it clears the legibility gate without
+    /// anyone asking — the override has to leave a layout it agrees with
+    /// exactly as it found it.
+    #[test]
+    fn forcing_an_already_open_directory_changes_nothing() {
+        let mut b = EntryBatch::default();
+        b.push("root", entry(0, 0, DIR, 0));
+        b.push("mid", entry(1, 0, DIR, 0));
+        b.push("a", entry(2, 1, FILE, 400));
+        b.push("b", entry(3, 1, FILE, 400));
+        b.push("c", entry(4, 1, FILE, 200));
+        let mut builder = TreeBuilder::new();
+        builder.add_batch(&b);
+        let tree = builder.finish();
+
+        let vp = Viewport { w: 400.0, h: 400.0 };
+        let opts = floored(6.0);
+        let base = layout(&tree, 0, vp, &opts);
+        assert!(
+            base.iter().any(|r| r.depth == 2),
+            "mid subdivides on its own"
+        );
+
+        let forced = layout_with_force(&tree, 0, vp, &opts, None, Some(1));
+
+        assert_eq!(base, forced);
+    }
+
+    /// Opening by hand overrides the legibility rules, not the floor: the
+    /// revealed children are still blocks someone can see and click.
+    #[test]
+    fn forcing_still_honours_the_floor() {
+        let tree = legibility_gated_plate(400);
+        let vp = Viewport { w: 400.0, h: 400.0 };
+        let opts = floored(6.0);
+
+        let rects = layout_with_force(&tree, 0, vp, &opts, None, Some(2));
+
+        assert!(rects.len() > 2, "the plate opened");
+        for r in &rects {
+            assert!(
+                r.w.min(r.h) >= 6.0,
+                "id {} is {}×{}, under the floor",
+                r.id,
+                r.w,
+                r.h
+            );
+        }
+    }
+
+    /// A filter can zero out everything inside a folder. Opening it then finds
+    /// nothing to draw — which is a plate, not a panic.
+    #[test]
+    fn forcing_a_directory_with_nothing_visible_stays_a_plate() {
+        let tree = legibility_gated_plate(200);
+        let mut bytes = vec![0u64; tree.len()];
+        bytes[0] = 8000;
+        bytes[1] = 8000;
+        // Every leaf of `mid` is filtered out, so `mid` has no visible children.
+        bytes[2] = 0;
+
+        let vp = Viewport { w: 400.0, h: 400.0 };
+        let opts = floored(6.0);
+        let plain = layout_with_filter(&tree, 0, vp, &opts, &bytes);
+        let forced = layout_with_force(&tree, 0, vp, &opts, Some(&bytes), Some(2));
+
+        assert_eq!(plain, forced);
+        assert!(forced.iter().all(|r| r.id != 2 || r.is_dir));
+    }
+
     /// Adaptive depth, the other half: a body too thin for even one minimum
     /// block ends the descent there, whatever is inside it.
     #[test]
@@ -966,20 +1313,48 @@ mod tests {
     /// same children are worth drawing.
     #[test]
     fn a_folder_of_equals_stays_a_plate_until_a_child_is_worth_drawing() {
-        let tree = equal_files(300, 1);
+        // 150 files is under the child limit, so what is being tested here is
+        // the legibility gate and nothing else.
+        let tree = equal_files(150, 1);
         let opts = TreemapOptions {
             min_side_px: 6.0,
             ..no_padding()
         };
 
         let tight = layout(&tree, 0, Viewport { w: 100.0, h: 100.0 }, &opts);
-        assert_eq!(tight.len(), 1, "one plate, not 300 blocks");
+        assert_eq!(tight.len(), 1, "one plate, not 150 blocks");
 
         let roomy = layout(&tree, 0, Viewport { w: 600.0, h: 600.0 }, &opts);
         assert!(
             roomy.len() > 100,
-            "at 1200px² a child the floor is not the point any more"
+            "at 2400px² a child the floor is not the point any more"
         );
+    }
+
+    /// The shipped floor, without padding — the cheapest options that still
+    /// have the legibility rules switched on.
+    fn floored(min_side: f32) -> TreemapOptions {
+        TreemapOptions {
+            min_side_px: min_side,
+            ..no_padding()
+        }
+    }
+
+    /// A root holding one big file and one directory of `n` one-byte children,
+    /// sized so that directory is a plate for the *legibility* reason — its
+    /// biggest child would come out around 20px² — and not because of the
+    /// child count.
+    fn legibility_gated_plate(n: u32) -> Tree {
+        let mut b = EntryBatch::default();
+        b.push("root", entry(0, 0, DIR, 0));
+        b.push("wide", entry(1, 0, FILE, 8000));
+        b.push("mid", entry(2, 0, DIR, 0));
+        for i in 0..n {
+            b.push("leaf", entry(3 + i, 2, FILE, 1));
+        }
+        let mut builder = TreeBuilder::new();
+        builder.add_batch(&b);
+        builder.finish()
     }
 
     fn capped_at(max_depth: u8) -> TreemapOptions {
