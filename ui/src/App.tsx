@@ -17,6 +17,7 @@ import {
   type TreemapRect,
 } from "./lib/api";
 import { copyText } from "./lib/clipboard";
+import { layoutDepth } from "./lib/prefs";
 import { onUiError, reportUiError, reportUnlessStale } from "./lib/errors";
 
 const TREE_PANE_MIN = 320;
@@ -360,6 +361,7 @@ export default function App() {
         startError={scan.startError}
         hideSystem={scan.hideSystem}
         showLabels={scan.showLabels}
+        depth={scan.depth}
         filter={scan.filter}
         typePanelOpen={typePanelOpen}
         themePref={theme.pref}
@@ -368,6 +370,7 @@ export default function App() {
         onCancel={scan.cancel}
         onToggleHideSystem={scan.toggleHideSystem}
         onToggleShowLabels={scan.toggleShowLabels}
+        onDepth={scan.setDepth}
         onToggleTypePanel={() => setTypePanelOpen((v) => !v)}
         onSearchSelect={handleSearchSelect}
         onApplyFilter={scan.setFilter}
@@ -427,6 +430,7 @@ export default function App() {
             hideSystem={scan.hideSystem}
             filter={scan.filter}
             labels={scan.showLabels}
+            maxDepth={layoutDepth(scan.depth)}
             selected={selected}
             hoveredId={hoveredId}
             onSelect={handleTreemapSelect}

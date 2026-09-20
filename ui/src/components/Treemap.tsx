@@ -214,6 +214,12 @@ export interface TreemapProps {
   filter: string | null;
   /** Draw each block's name and size inside it. Off by default. */
   labels: boolean;
+  /**
+   * Depth setting: null is Auto, where the layout decides how deep to go.
+   * A number is a fixed cap, which is a *different* layout rule, not just a
+   * shorter one — see `TreemapOptions::adaptive_depth`.
+   */
+  maxDepth: number | null;
   selected: number | null;
   hoveredId: number | null;
   onSelect: (rect: TreemapRect) => void;
@@ -237,6 +243,7 @@ export function Treemap({
   hideSystem,
   filter,
   labels,
+  maxDepth,
   selected,
   hoveredId,
   onSelect,
@@ -286,6 +293,8 @@ export function Treemap({
   filterRef.current = filter;
   const labelsRef = useRef(labels);
   labelsRef.current = labels;
+  const maxDepthRef = useRef(maxDepth);
+  maxDepthRef.current = maxDepth;
 
   const [crumbs, setCrumbs] = useState<Crumb[]>([]);
   const [tooltip, setTooltip] = useState<TooltipData | null>(null);
@@ -460,6 +469,7 @@ export function Treemap({
         hideSystemRef.current,
         filterRef.current,
         forceOpenRef.current,
+        maxDepthRef.current,
       );
       if (seq !== fetchSeqRef.current || forRoot !== rootIdRef.current) return;
       rectsRef.current = rects;
@@ -625,6 +635,16 @@ export function Treemap({
     // stay put, or this cascades into the size effect and double-fetches.
     void fetchLayout();
   }, [forceOpenId, fetchLayout]);
+
+  useEffect(() => {
+    // Same for the depth: it picks which rule the layout follows.
+    // Opening a plate is a request to override the legibility rules, and a
+    // cap is a request that they not apply at all — so an open folder has
+    // nothing left to say under one. Drop it rather than leave the state
+    // meaning something the map is not doing.
+    setForceOpenId(null);
+    void fetchLayout();
+  }, [maxDepth, fetchLayout]);
 
   useEffect(() => {
     // Labels are painted over the baked layout, never into it: toggling them
@@ -798,7 +818,11 @@ export function Treemap({
       // A plate has nothing to zoom into without opening first, so the click
       // opens it — unless it turns out to be too small to be worth showing in
       // place, which `fetchLayout` answers by zooming instead.
-      if (hit.isDir && platesRef.current.has(hit.id)) {
+      if (
+        hit.isDir &&
+        maxDepthRef.current === null &&
+        platesRef.current.has(hit.id)
+      ) {
         arm(hit.id, false);
         return;
       }

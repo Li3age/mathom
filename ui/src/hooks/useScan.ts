@@ -12,6 +12,11 @@ import {
 } from "../lib/api";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { reportUiError, reportUnlessStale } from "../lib/errors";
+import {
+  loadTreemapDepth,
+  saveTreemapDepth,
+  type DepthPref,
+} from "../lib/prefs";
 
 export interface Sort {
   key: SortKey;
@@ -28,6 +33,9 @@ export interface ScanController {
   hideSystem: boolean;
   /** Draw each treemap block's name and size inside it. */
   showLabels: boolean;
+  /** Depth setting: "auto" is the adaptive layout, the rest are fixed caps. */
+  depth: DepthPref;
+  setDepth: (depth: DepthPref) => void;
   /** Active view filter (search grammar) or null; applies post-scan only. */
   filter: string | null;
   startError: string | null;
@@ -53,6 +61,12 @@ export function useScan(): ScanController {
   const [sort, setSort] = useState<Sort>({ key: "size", desc: true });
   const [hideSystem, setHideSystem] = useState(true);
   const [showLabels, setShowLabels] = useState(false);
+  const [depth, setDepthState] = useState<DepthPref>(loadTreemapDepth);
+
+  const setDepth = useCallback((next: DepthPref) => {
+    setDepthState(next);
+    saveTreemapDepth(next);
+  }, []);
   const [filter, setFilterState] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
 
@@ -281,6 +295,8 @@ export function useScan(): ScanController {
     sort,
     hideSystem,
     showLabels,
+    depth,
+    setDepth,
     filter,
     startError,
     scanning: snapshot?.state === "scanning",

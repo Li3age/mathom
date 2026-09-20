@@ -341,6 +341,11 @@ pub fn get_path(state: State<'_, AppState>, generation: u64, id: NodeId) -> Resu
     Ok(tree.path(id))
 }
 
+/// The deepest the adaptive layout will go. Only a backstop — the legibility
+/// rules stop it long before this — but the tree's depth is unbounded, so
+/// something has to. Mirrored as `MAX_TREEMAP_DEPTH` in `ui/src/lib/prefs.ts`.
+const MAX_TREEMAP_DEPTH: u8 = 24;
+
 /// Legibility floor for a treemap rect, in CSS pixels. A child whose share of
 /// its directory falls under this is drawn at this size anyway — a directory
 /// has to tile edge to edge, or the small stuff reads as a hole rather than as
@@ -361,6 +366,7 @@ pub fn get_treemap(
     hide_system: bool,
     filter: Option<String>,
     force_open: Option<NodeId>,
+    max_depth: Option<u8>,
 ) -> Result<Vec<TreemapRectDto>, String> {
     let session = session_for(&state, generation)?;
     let builder = session.builder.read().unwrap();
@@ -376,7 +382,12 @@ pub fn get_treemap(
         // The labels the UI can draw are a *view* of this geometry, never an
         // input to it: nothing here knows whether they are on, so switching
         // them cannot move a single block.
-        max_depth: 24,
+        //
+        // `max_depth` is the Depth setting: absent means Auto, where the
+        // pixels decide how deep to go; present means the original fixed
+        // layout, which takes every level the cap allows and asks nothing.
+        max_depth: max_depth.unwrap_or(MAX_TREEMAP_DEPTH),
+        adaptive_depth: max_depth.is_none(),
         hide_system,
     };
     let viewport = Viewport {

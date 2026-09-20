@@ -40,7 +40,19 @@ pub struct TreemapOptions {
     /// smallest first, and the rest spread into their space. Zero lays the
     /// children out strictly proportionally.
     pub min_side_px: f32,
+    /// Hard ceiling on how deep the layout goes. The only brake on a tree
+    /// whose depth is unbounded, so it holds in both modes below — and it is
+    /// deliberately not lifted by `layout_with_force`.
     pub max_depth: u8,
+    /// Whether a level is taken because the pixels say it is worth taking, or
+    /// simply because `max_depth` has not been reached yet.
+    ///
+    /// True is what the map does by default: a directory stops when nothing
+    /// inside it would be legible, whatever the cap says. False is the
+    /// original behaviour — subdivide until the frame runs out — kept because
+    /// a fixed depth is a legitimate thing to want from a treemap, and it is
+    /// what the Depth setting's All/1/2/3 choose.
+    pub adaptive_depth: bool,
     /// Omit SYSTEM entries and proportion tiles by visible bytes.
     pub hide_system: bool,
 }
@@ -277,11 +289,10 @@ fn emit(
     if frame.w <= 0.0 || frame.h <= 0.0 {
         return;
     }
-    // Adaptive depth, second half: a body too thin to hold a legible block
-    // stops here. (`lay_children` applies the first half — whether what is
-    // inside is worth a level at all.) `max_depth` is only an upper bound on
-    // top of those, and it is the one bound forcing does *not* lift: it is the
-    // only brake on recursion, and the tree's depth is unbounded.
+    // A body too thin to hold a legible block stops here — geometry, not
+    // policy, so this holds in both depth modes. `max_depth` is the other
+    // bound, and it is the one forcing does *not* lift: it is the only brake
+    // on recursion, and the tree's depth is unbounded.
     if frame.w < opts.min_side_px as f64 || frame.h < opts.min_side_px as f64 {
         return;
     }
@@ -322,7 +333,12 @@ fn lay_children(
     // guard: zero means "no floor, lay it out as it is", which is what the
     // exact-geometry tests ask for and what makes those reasons moot. Neither
     // applies to a directory the user opened by hand; that ask outranks them.
-    if !forced && min_side > 0.0 {
+    //
+    // `adaptive_depth` off means the caller asked for the *other* rule: take
+    // every level the cap allows and let the floor deal with whatever it
+    // turns up. That is the original behaviour, and the Depth setting's
+    // All/1/2/3 are how it is asked for.
+    if opts.adaptive_depth && !forced && min_side > 0.0 {
         // How many children this much room can hold at a size worth looking
         // at, from the frame's own area — so the same directory opens up when
         // it has room and folds when it does not. At least a few, so the count
@@ -563,6 +579,7 @@ mod tests {
         TreemapOptions {
             min_side_px: 0.0,
             max_depth: 32,
+            adaptive_depth: true,
             hide_system: false,
         }
     }
@@ -904,6 +921,75 @@ mod tests {
         );
     }
 
+    /// The Depth setting's fixed levels: every level the cap allows, and the
+    /// legibility rules stand down. This is the original layout, kept as an
+    /// option because a fixed depth is a legitimate thing to want.
+    fn capped_depth(max_depth: u8) -> TreemapOptions {
+        TreemapOptions {
+            min_side_px: 6.0,
+            max_depth,
+            adaptive_depth: false,
+            hide_system: false,
+        }
+    }
+
+    /// The whole point of having both: a directory Auto folds because nothing
+    /// inside it would be readable is opened by a cap, because a cap does not
+    /// ask that question. Leave the gates on and this fails.
+    #[test]
+    fn a_cap_expands_what_the_adaptive_rule_folds() {
+        let tree = legibility_gated_plate(200);
+        let vp = Viewport { w: 400.0, h: 400.0 };
+
+        let auto = layout(&tree, 0, vp, &floored(6.0));
+        assert!(auto.iter().all(|r| r.depth < 2), "Auto folds it");
+
+        let capped = layout(&tree, 0, vp, &capped_depth(2));
+        assert!(
+            capped.iter().any(|r| r.depth == 2),
+            "a cap of 2 opens it anyway"
+        );
+    }
+
+    /// A cap hides what is below it and moves nothing else — so switching the
+    /// Depth setting cannot make the blocks above the line jump.
+    #[test]
+    fn a_cap_hides_only_the_rects_it_stops_short_of() {
+        let tree = mixed_tree();
+        let vp = Viewport { w: 900.0, h: 600.0 };
+
+        let shallow = layout(&tree, 0, vp, &capped_depth(1));
+        let deep: Vec<TreemapRect> = layout(&tree, 0, vp, &capped_depth(3))
+            .into_iter()
+            .filter(|r| r.depth <= 1)
+            .collect();
+
+        assert_eq!(shallow, deep);
+        assert!(shallow.iter().any(|r| r.depth == 1), "depth 1 is drawn");
+    }
+
+    /// And the caps nest in order, which is what makes the setting a dial
+    /// rather than four unrelated pictures: every level is the one above it,
+    /// plus a level.
+    #[test]
+    fn the_caps_nest_inside_one_another() {
+        let tree = mixed_tree();
+        let vp = Viewport { w: 900.0, h: 600.0 };
+        let at = |depth: u8| layout(&tree, 0, vp, &capped_depth(depth));
+
+        for (shallow, deep) in [(1u8, 2u8), (2, 3)] {
+            let filtered: Vec<TreemapRect> = at(deep)
+                .into_iter()
+                .filter(|r| r.depth <= shallow)
+                .collect();
+            assert_eq!(
+                at(shallow),
+                filtered,
+                "cap {shallow} sits inside cap {deep}"
+            );
+        }
+    }
+
     /// A block sits in the frame its parent was handed, exactly: the only thing
     /// between two blocks is the 1px the renderer draws, whatever depth either
     /// sits at. An inset here would stack with that one, so a block a level
@@ -943,6 +1029,7 @@ mod tests {
         let opts = TreemapOptions {
             min_side_px: 6.0,
             max_depth: 32,
+            adaptive_depth: true,
             hide_system: false,
         };
         let tree = mixed_tree();
@@ -1411,6 +1498,7 @@ mod tests {
         let opts = TreemapOptions {
             min_side_px: 0.0,
             max_depth: 1,
+            adaptive_depth: true,
             hide_system: false,
         };
         let rects = layout(&tree, 0, Viewport { w: 100.0, h: 100.0 }, &opts);
