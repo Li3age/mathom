@@ -11,10 +11,14 @@
 //! so dropping leaves no hole either.
 //!
 //! How deep that goes is decided by the pixels, not by a number: a directory
-//! subdivides only while its interior can hold a legible child *and* its
-//! biggest child would land well clear of the floor. Without the second half,
-//! folders nest into folders of specks — each level spending padding to cut
-//! the next one finer — and the map ends up a mesh nothing can be read from.
+//! subdivides only while its interior can hold a legible child, its biggest
+//! child would land well clear of the floor, and it has room to give each
+//! child a block worth looking at. Without the last two, folders nest into
+//! folders of specks and the map ends up a mesh nothing can be read from.
+//!
+//! A directory's children get its frame whole — no inset, at any depth. What
+//! separates two blocks is the renderer's 1px and nothing else, so the seams
+//! are the same width however the nesting falls.
 
 use crate::category::categorize;
 use crate::entry::EntryFlags;
@@ -36,7 +40,6 @@ pub struct TreemapOptions {
     /// smallest first, and the rest spread into their space. Zero lays the
     /// children out strictly proportionally.
     pub min_side_px: f32,
-    pub padding_px: f32,
     pub max_depth: u8,
     /// Omit SYSTEM entries and proportion tiles by visible bytes.
     pub hide_system: bool,
@@ -53,16 +56,21 @@ pub struct TreemapOptions {
 /// child would still be a speck says more as one plate.
 const DETAIL_FACTOR: f64 = 2.0;
 
-/// How many direct children a directory may have before the layout folds it
-/// into one plate by default.
+/// The smallest block a directory is willing to *average* when it subdivides.
+///
+/// The legibility gate asks whether the biggest child is worth a block. This
+/// one asks how thinly the whole set is spread — which is what a folder of
+/// three hundred small files is — and the answer depends on how much room the
+/// folder has, not on a count: a small folder showing twenty things and a
+/// large one showing thirty are the same number and not the same picture. So
+/// the limit is a capacity derived from the folder's own area, and a directory
+/// that cannot give each child this much folds into one plate instead.
 ///
 /// Counting visible children, not descendants: what the layout has to place at
 /// this level is its own children, and a folder of three folders holding a
-/// thousand files each is three blocks here, not a thousand. Well past this
-/// the blocks stop being things you can point at — even at 6px, a plate this
-/// subdivided is a texture — and a plate you can click is the better answer.
-/// Clicking is the ask that overrides it.
-const MAX_DIRECT_CHILDREN: usize = 200;
+/// thousand files each is three blocks here, not a thousand. Clicking a plate
+/// is the ask that overrides all of this.
+const COMFORT_PX: f64 = 32.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TreemapRect {
@@ -218,15 +226,6 @@ impl Frame {
     fn area(&self) -> f64 {
         self.w * self.h
     }
-
-    fn inset(&self, pad: f64) -> Frame {
-        Frame {
-            x: self.x + pad,
-            y: self.y + pad,
-            w: self.w - 2.0 * pad,
-            h: self.h - 2.0 * pad,
-        }
-    }
 }
 
 // `open` is threaded down the recursion rather than carried in a context
@@ -270,20 +269,23 @@ fn emit(
     // still. The floor, the dropping and the re-normalizing in `lay_children`
     // are functions of this directory alone for the same reason: never of
     // `max_depth`, and never of anything global.
-    let inner = frame.inset(opts.padding_px as f64);
-    if inner.w <= 0.0 || inner.h <= 0.0 {
+    //
+    // Children get the frame *whole* — the seam between two blocks is the
+    // renderer's 1px and only that, whatever depth either block sits at. An
+    // inset here would stack with it, so a block two levels down from another
+    // would sit behind a 3px seam and the map would look chewed.
+    if frame.w <= 0.0 || frame.h <= 0.0 {
         return;
     }
-    // Adaptive depth, second half: going a level deeper costs padding off
-    // every side of every grandchild, so a branch runs out of room on its own
-    // and stops. (`lay_children` applies the first half — whether the biggest
-    // child here is worth a level at all.) `max_depth` is only an upper bound
-    // on top of that, and it is the one bound forcing does *not* lift: it is
-    // the only brake on recursion, and the tree's depth is unbounded.
-    if inner.w < opts.min_side_px as f64 || inner.h < opts.min_side_px as f64 {
+    // Adaptive depth, second half: a body too thin to hold a legible block
+    // stops here. (`lay_children` applies the first half — whether what is
+    // inside is worth a level at all.) `max_depth` is only an upper bound on
+    // top of those, and it is the one bound forcing does *not* lift: it is the
+    // only brake on recursion, and the tree's depth is unbounded.
+    if frame.w < opts.min_side_px as f64 || frame.h < opts.min_side_px as f64 {
         return;
     }
-    lay_children(tree, id, inner, depth + 1, opts, visible, open, out);
+    lay_children(tree, id, frame, depth + 1, opts, visible, open, out);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -321,11 +323,17 @@ fn lay_children(
     // exact-geometry tests ask for and what makes those reasons moot. Neither
     // applies to a directory the user opened by hand; that ask outranks them.
     if !forced && min_side > 0.0 {
+        // How many children this much room can hold at a size worth looking
+        // at, from the frame's own area — so the same directory opens up when
+        // it has room and folds when it does not. At least a few, so the count
+        // alone never folds a directory holding only a handful: whether those
+        // are readable is the legibility gate's question, below.
+        let capacity = ((frame.area() / (COMFORT_PX * COMFORT_PX)) as usize).max(4);
         // Counted from the visible children rather than `tree.children`,
         // because under a filter or hide_system what matters is how many
         // blocks would actually be drawn. Ahead of the sort, so a directory
         // this is meant to keep off the map never pays to order it.
-        if items.len() > MAX_DIRECT_CHILDREN {
+        if items.len() > capacity {
             return;
         }
         // The biggest thing in here would come out a speck: the subdivision
@@ -554,7 +562,6 @@ mod tests {
     fn no_padding() -> TreemapOptions {
         TreemapOptions {
             min_side_px: 0.0,
-            padding_px: 0.0,
             max_depth: 32,
             hide_system: false,
         }
@@ -599,7 +606,7 @@ mod tests {
         let mut b = EntryBatch::default();
         b.push("root", entry(0, 0, DIR, 0));
         b.push("media", entry(1, 0, DIR, 0));
-        b.push("movie", entry(2, 1, FILE, 400_000));
+        b.push("movie", entry(2, 1, FILE, 40_000));
         b.push("clips", entry(3, 1, DIR, 0));
         b.push("readme", entry(4, 0, FILE, 500));
         b.push("src", entry(5, 0, DIR, 0));
@@ -608,7 +615,7 @@ mod tests {
             b.push("clip", entry(next, 3, FILE, 1_000));
             next += 1;
         }
-        for _ in 0..150 {
+        for _ in 0..60 {
             b.push("dud", entry(next, 3, FILE, 1));
             next += 1;
         }
@@ -625,22 +632,20 @@ mod tests {
         builder.finish()
     }
 
-    /// The area a directory hands to its children: its own rect inset by the
-    /// padding, exactly as `emit` computes it.
-    fn body_area(dir: &TreemapRect, opts: &TreemapOptions) -> f64 {
-        let pad = opts.padding_px as f64;
-        let w = (dir.w as f64 - 2.0 * pad).max(0.0);
-        let h = (dir.h as f64 - 2.0 * pad).max(0.0);
-        w * h
+    /// The area a directory hands to its children. With no padding anywhere in
+    /// the layout that is simply its own rect — and the point of the tests
+    /// below is that it stays that way: a block's frame is its parent's frame,
+    /// so nothing but the renderer's 1px sits between two blocks.
+    fn body_area(dir: &TreemapRect) -> f64 {
+        dir.w as f64 * dir.h as f64
     }
 
     /// Total area `dir`'s direct children were laid into. Containment is what
     /// identifies them — it has to be, since two directories at the same depth
     /// are both `depth + 1` away from the same root.
-    fn children_area(rects: &[TreemapRect], dir: &TreemapRect, opts: &TreemapOptions) -> f64 {
-        let pad = opts.padding_px;
-        let (x0, y0) = (dir.x + pad, dir.y + pad);
-        let (x1, y1) = (dir.x + dir.w - pad, dir.y + dir.h - pad);
+    fn children_area(rects: &[TreemapRect], dir: &TreemapRect) -> f64 {
+        let (x0, y0) = (dir.x, dir.y);
+        let (x1, y1) = (dir.x + dir.w, dir.y + dir.h);
         rects
             .iter()
             .filter(|r| {
@@ -761,32 +766,6 @@ mod tests {
         assert!((area(&dir) - 10_000.0).abs() < 1.0);
     }
 
-    #[test]
-    fn padding_insets_children_inside_their_directory() {
-        let mut b = EntryBatch::default();
-        b.push("root", entry(0, 0, DIR, 0));
-        b.push("dir", entry(1, 0, DIR, 0));
-        b.push("f", entry(2, 1, FILE, 100));
-        let mut builder = TreeBuilder::new();
-        builder.add_batch(&b);
-        let tree = builder.finish();
-
-        let opts = TreemapOptions {
-            min_side_px: 0.0,
-            padding_px: 2.0,
-            max_depth: 32,
-            hide_system: false,
-        };
-        let rects = layout(&tree, 0, Viewport { w: 100.0, h: 100.0 }, &opts);
-
-        let dir = rect_of(&rects, 1);
-        let f = rect_of(&rects, 2);
-        assert!((f.x - (dir.x + 2.0)).abs() < 0.01);
-        assert!((f.y - (dir.y + 2.0)).abs() < 0.01);
-        assert!((f.w - (dir.w - 4.0)).abs() < 0.01);
-        assert!((f.h - (dir.h - 4.0)).abs() < 0.01);
-    }
-
     /// 1,000,000 vs 1 in 100×100: the small file's share is a 100×0.0001
     /// sliver, and it cannot buy a 1×1 block either — so it goes. Note where
     /// its space ends up: with the others, not left blank where it was.
@@ -833,13 +812,13 @@ mod tests {
             min_side_px: 6.0,
             ..no_padding()
         };
-        let rects = layout(&tree, 0, Viewport { w: 200.0, h: 200.0 }, &opts);
+        let rects = layout(&tree, 0, Viewport { w: 300.0, h: 300.0 }, &opts);
 
         let root = rect_of(&rects, 0);
         let drawn = rects.iter().filter(|r| r.depth == 1).count();
         assert!(drawn > 1, "the specks are drawn, not dropped: {drawn}");
         assert!(
-            (children_area(&rects, &root, &opts) - body_area(&root, &opts)).abs() < 0.01,
+            (children_area(&rects, &root) - body_area(&root)).abs() < 0.01,
             "the children cover the block"
         );
         for r in rects.iter().filter(|r| r.depth == 1) {
@@ -862,7 +841,7 @@ mod tests {
             min_side_px: 6.0,
             ..no_padding()
         };
-        let rects = layout(&tree, 0, Viewport { w: 200.0, h: 200.0 }, &opts);
+        let rects = layout(&tree, 0, Viewport { w: 300.0, h: 300.0 }, &opts);
 
         // Everything but `big` is a speck, and they are all the same speck.
         let areas: Vec<f64> = rects
@@ -884,7 +863,6 @@ mod tests {
         let tree = speck_tree(1_000_000, 1);
         let opts = TreemapOptions {
             min_side_px: 6.0,
-            padding_px: 2.0,
             ..no_padding()
         };
         let rects = layout(&tree, 0, Viewport { w: 100.0, h: 100.0 }, &opts);
@@ -892,7 +870,7 @@ mod tests {
         let root = rect_of(&rects, 0);
         assert!(rects.iter().all(|r| r.id != 2), "tiny cannot buy a block");
         assert!(
-            (children_area(&rects, &root, &opts) - body_area(&root, &opts)).abs() < 0.01,
+            (children_area(&rects, &root) - body_area(&root)).abs() < 0.01,
             "the survivor takes the dropped child's share too"
         );
     }
@@ -921,9 +899,40 @@ mod tests {
         }
         let root = rect_of(&rects, 0);
         assert!(
-            (children_area(&rects, &root, &opts) - body_area(&root, &opts)).abs() < 0.01,
+            (children_area(&rects, &root) - body_area(&root)).abs() < 0.01,
             "dropping the tail does not open a hole"
         );
+    }
+
+    /// A block sits in the frame its parent was handed, exactly: the only thing
+    /// between two blocks is the 1px the renderer draws, whatever depth either
+    /// sits at. An inset here would stack with that one, so a block a level
+    /// down from its neighbour would stand behind a 3px seam next to that
+    /// neighbour's 1px — the map looked chewed, and this is the cause.
+    #[test]
+    fn a_block_sits_in_its_parents_frame_with_no_inset() {
+        // root / d1 / d2 / f, each the only child of the one above it, so every
+        // frame in the chain is the one the root was handed.
+        let mut b = EntryBatch::default();
+        b.push("root", entry(0, 0, DIR, 0));
+        b.push("d1", entry(1, 0, DIR, 0));
+        b.push("d2", entry(2, 1, DIR, 0));
+        b.push("f", entry(3, 2, FILE, 100));
+        let mut builder = TreeBuilder::new();
+        builder.add_batch(&b);
+        let tree = builder.finish();
+
+        let rects = layout(&tree, 0, Viewport { w: 300.0, h: 200.0 }, &floored(6.0));
+
+        let root = rect_of(&rects, 0);
+        for id in [1u32, 2, 3] {
+            let r = rect_of(&rects, id);
+            assert_eq!(
+                (r.x, r.y, r.w, r.h),
+                (root.x, root.y, root.w, root.h),
+                "id {id} is inset from the frame its parent was handed"
+            );
+        }
     }
 
     /// The whole rule as one invariant, under the shipped options: at every
@@ -933,7 +942,6 @@ mod tests {
     fn production_options_leave_no_gaps_at_any_depth() {
         let opts = TreemapOptions {
             min_side_px: 6.0,
-            padding_px: 1.0,
             max_depth: 32,
             hide_system: false,
         };
@@ -947,13 +955,13 @@ mod tests {
             "and runs deep enough for the floor to bite"
         );
         for dir in &dirs {
-            let kids = children_area(&rects, dir, &opts);
+            let kids = children_area(&rects, dir);
             // No children means the directory stayed a plate: its body could
             // not hold a legible block, so it never subdivided.
             if kids == 0.0 {
                 continue;
             }
-            let body = body_area(dir, &opts);
+            let body = body_area(dir);
             assert!(
                 (kids - body).abs() < 0.001 * body,
                 "dir {} covers {kids} of its {body}px² body",
@@ -1028,29 +1036,41 @@ mod tests {
         assert!(opts.max_depth > 1, "the cap never came into it");
     }
 
-    /// The child limit, from both sides of it. The viewport is far too big for
-    /// the legibility gate to be what folds either one — 200 equal children in
-    /// 600×600 is 1800px² each — so only the count can be doing it.
+    /// How many children a directory will show is `area / COMFORT_PX²`. In a
+    /// 320×320 viewport that is 100, and each of those children comes out
+    /// around 31×31 — far over the legibility gate's 12px — so only the
+    /// capacity can be what folds the 101st.
     #[test]
-    fn more_direct_children_than_the_limit_stay_a_plate() {
-        let vp = Viewport { w: 600.0, h: 600.0 };
+    fn more_children_than_the_room_allows_stay_a_plate() {
+        let vp = Viewport { w: 320.0, h: 320.0 };
         let opts = floored(6.0);
+        let capacity = (320.0 * 320.0 / (COMFORT_PX * COMFORT_PX)) as u32;
 
-        let under = layout(&equal_files(MAX_DIRECT_CHILDREN as u32, 1), 0, vp, &opts);
-        assert!(under.len() > 1, "the limit itself is still drawn");
+        let under = layout(&equal_files(capacity, 1), 0, vp, &opts);
+        assert!(under.len() > 1, "the capacity itself is still drawn");
 
-        let over = layout(
-            &equal_files(MAX_DIRECT_CHILDREN as u32 + 1, 1),
-            0,
-            vp,
-            &opts,
-        );
+        let over = layout(&equal_files(capacity + 1, 1), 0, vp, &opts);
         assert_eq!(over.len(), 1, "one plate once it is over");
     }
 
-    /// What the limit counts is children that would be *drawn*. Hiding the
-    /// system files takes this directory from 250 of them to 50, which is back
-    /// under the limit, so it opens again.
+    /// The rule is about room, not about a number: the same directory with the
+    /// same children folds in a small window and opens in a large one. A fixed
+    /// limit cannot do both, which is the whole reason this one changed.
+    #[test]
+    fn the_child_limit_scales_with_the_room_a_directory_has() {
+        let tree = equal_files(40, 1);
+        let opts = floored(6.0);
+
+        let roomy = layout(&tree, 0, Viewport { w: 320.0, h: 320.0 }, &opts);
+        assert!(roomy.len() > 1, "100 will fit here");
+
+        let cramped = layout(&tree, 0, Viewport { w: 200.0, h: 200.0 }, &opts);
+        assert_eq!(cramped.len(), 1, "39 will not");
+    }
+
+    /// What the capacity counts is children that would be *drawn*. Hiding the
+    /// system files takes this directory from 250 of them to 50, back under
+    /// what 320×320 can show, so it opens again.
     #[test]
     fn the_child_limit_counts_visible_direct_children() {
         let mut b = EntryBatch::default();
@@ -1068,11 +1088,11 @@ mod tests {
         builder.add_batch(&b);
         let tree = builder.finish();
 
-        let vp = Viewport { w: 600.0, h: 600.0 };
+        let vp = Viewport { w: 320.0, h: 320.0 };
         assert_eq!(
             layout(&tree, 0, vp, &floored(6.0)).len(),
             1,
-            "250 of them is over the limit"
+            "250 of them is over the capacity"
         );
         let hidden = TreemapOptions {
             hide_system: true,
@@ -1187,7 +1207,8 @@ mod tests {
         builder.add_batch(&b);
         let tree = builder.finish();
 
-        let vp = Viewport { w: 600.0, h: 600.0 };
+        // 320×320 holds 100, so `outer`'s 201 children are well past it.
+        let vp = Viewport { w: 320.0, h: 320.0 };
         let opts = floored(6.0);
         let base = layout(&tree, 0, vp, &opts);
         assert!(base.iter().all(|r| r.depth < 2), "outer is folded");
@@ -1389,7 +1410,6 @@ mod tests {
 
         let opts = TreemapOptions {
             min_side_px: 0.0,
-            padding_px: 0.0,
             max_depth: 1,
             hide_system: false,
         };

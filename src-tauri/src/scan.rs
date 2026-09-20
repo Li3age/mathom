@@ -373,7 +373,6 @@ pub fn get_treemap(
     }
     let opts = TreemapOptions {
         min_side_px: TREEMAP_MIN_SIDE_PX,
-        padding_px: 1.0,
         // The labels the UI can draw are a *view* of this geometry, never an
         // input to it: nothing here knows whether they are on, so switching
         // them cannot move a single block.
