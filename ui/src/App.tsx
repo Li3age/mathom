@@ -123,8 +123,10 @@ export default function App() {
 
   const handleTreemapSelect = useCallback(
     (rect: TreemapRect) => {
+      // Selecting only. Zooming is the treemap's own decision now — a click on
+      // a folder it drew as a plate opens that folder instead, and comes back
+      // through `onNavigate` if it turns out to want the whole view.
       select(rect.id);
-      if (rect.isDir) setViewRootId(rect.id);
       if (generation === 0) return;
       api
         .getAncestors(generation, rect.id)

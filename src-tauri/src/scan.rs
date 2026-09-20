@@ -360,6 +360,7 @@ pub fn get_treemap(
     height: f32,
     hide_system: bool,
     filter: Option<String>,
+    force_open: Option<NodeId>,
 ) -> Result<Vec<TreemapRectDto>, String> {
     let session = session_for(&state, generation)?;
     let builder = session.builder.read().unwrap();
@@ -383,9 +384,15 @@ pub fn get_treemap(
         w: width,
         h: height,
     };
+    // `force_open` names a directory the user asked to see inside of. One that
+    // is not in this subtree, or no longer names a live directory, opens
+    // nothing rather than erroring: a stale id is what an accordion looks like
+    // from the other side of a delete, and it should close by itself.
     let rects = match overlay_for(&session, tree, filter.as_deref(), hide_system) {
-        Some(o) => treemap::layout_with_filter(tree, root_id, viewport, &opts, &o.bytes),
-        None => treemap::layout(tree, root_id, viewport, &opts),
+        Some(o) => {
+            treemap::layout_with_force(tree, root_id, viewport, &opts, Some(&o.bytes), force_open)
+        }
+        None => treemap::layout_with_force(tree, root_id, viewport, &opts, None, force_open),
     };
     // The label's text rides along with the geometry: a rect the user can see
     // is a rect they can read, and asking per node would be one round trip per

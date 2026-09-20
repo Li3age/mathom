@@ -1,7 +1,23 @@
-// Indexed by mathom-core's `Category as u8`. Index 0 (directories) is
-// theme-dependent — canvas code paints plates with canvasColors().plate.
+/**
+ * The colour every directory plate is painted in. The one category colour that
+ * is not a file type, and the only dark one: a folder is a container, and a
+ * plate that reads as background made an unopened folder look like nothing was
+ * there at all. Deliberately not any file colour's hue, so a plate is never
+ * mistaken for the thing inside it.
+ */
+export const FOLDER_PLATE = "#3b4a6b";
+/** The plate's texture dot — a lighter tint of the same slate. */
+export const FOLDER_GRAIN = "#55618c";
+/**
+ * The 1px seam between two plates. A shade of the plate rather than the app
+ * background: the folder colour does not move with the theme, so a background
+ * seam would draw a white hairline through the map in the light theme.
+ */
+export const FOLDER_SEAM = "#2b3752";
+
+// Indexed by mathom-core's `Category as u8`.
 export const PALETTE: readonly string[] = [
-  "#30323a", // 0 directory plate (dark fallback; see canvasColors)
+  FOLDER_PLATE, // 0 directory
   "#a855f7", // 1 video
   "#22c55e", // 2 audio
   "#eab308", // 3 image
@@ -20,8 +36,6 @@ export function canvasColors() {
   const v = (name: string) => style.getPropertyValue(name).trim();
   return {
     background: v("--color-app"),
-    plate: v("--color-plate"),
-    plateGrain: v("--color-plate-grain"),
     selection: v("--color-ink"),
     hoverRing: v("--color-accent-ink"),
   };

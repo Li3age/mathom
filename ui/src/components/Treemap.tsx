@@ -25,11 +25,25 @@ import {
 } from "../lib/api";
 import { isStale, reportUnlessStale } from "../lib/errors";
 import { formatBytes, formatPercent } from "../lib/format";
-import { PALETTE, canvasColors, textOn } from "../lib/palette";
+import {
+  FOLDER_GRAIN,
+  FOLDER_PLATE,
+  FOLDER_SEAM,
+  PALETTE,
+  canvasColors,
+  textOn,
+} from "../lib/palette";
 
 const SCAN_REFRESH_MS = 400;
 const ZOOM_MS = 220;
 const TOOLTIP_DELAY_MS = 120;
+/**
+ * How long a click on a plate waits to find out whether it was half of a
+ * double click. Chromium reports the second click at the platform's interval,
+ * which defaults to 500ms — too long to hold every open for, so this is the
+ * compromise: a slow double click opens first and then zooms.
+ */
+const DOUBLE_CLICK_MS = 300;
 
 // Grain tile for directory plates. By the layout's contract, culled children
 // still consume their share of space, so every bare plate pixel is real bytes
@@ -127,9 +141,9 @@ function drawLabels(
     if ((rects[i + 1]?.depth ?? 0) > r.depth) continue;
     const s = snap(r, dpr, 1);
     if (s.w < minW || s.h < LABEL_MIN_H_PX * dpr) continue;
-    ctx.fillStyle = r.isDir
-      ? textOn(canvasColors().plate)
-      : textOn(PALETTE[r.category] ?? PALETTE[10]);
+    ctx.fillStyle = textOn(
+      r.isDir ? FOLDER_PLATE : (PALETTE[r.category] ?? PALETTE[10]),
+    );
     const name = fitText(ctx, r.name, s.w - 2 * pad);
     if (!name) continue;
     const cx = s.x + s.w / 2;
@@ -173,6 +187,42 @@ function snap(r: TreemapRect, dpr: number, gap: number): Snapped {
   const x1 = Math.round((r.x + r.w) * dpr);
   const y1 = Math.round((r.y + r.h) * dpr);
   return { x: x0, y: y0, w: x1 - x0 - gap, h: y1 - y0 - gap };
+}
+
+/** Rects with no children of their own — the ones a click can open. */
+function solidPlates(rects: TreemapRect[]): Set<number> {
+  const plates = new Set<number>();
+  for (let i = 0; i < rects.length; i++) {
+    const r = rects[i];
+    // Rects come out parents before children, so the next entry is a child
+    // exactly when it is deeper.
+    if (r.isDir && !((rects[i + 1]?.depth ?? 0) > r.depth)) plates.add(r.id);
+  }
+  return plates;
+}
+
+/**
+ * How big the biggest thing inside an opened folder has to come out to be
+ * worth showing in place. This is the layout's own legibility line — twice the
+ * minimum block — not a new number: below it the layout would have refused to
+ * subdivide for the same reason, and drawing it anyway is the mosaic of specks
+ * this whole corner of the map exists to avoid.
+ */
+const AUTO_ZOOM_PX = 12;
+
+/**
+ * Did opening `id` reveal anything worth looking at?
+ *
+ * `rects[i + 1]` is the folder's biggest child: rows are laid out in
+ * descending size and the list is pre-order, so the first child emitted is the
+ * largest. No child at all is not "too small" — there is nothing to zoom to.
+ */
+function revealedTooSmall(rects: TreemapRect[], id: number): boolean {
+  const at = rects.findIndex((r) => r.id === id);
+  if (at < 0) return false;
+  const first = rects[at + 1];
+  if (!first || first.depth <= rects[at].depth) return false;
+  return Math.min(first.w, first.h) < AUTO_ZOOM_PX;
 }
 
 interface TooltipData {
@@ -245,6 +295,15 @@ export function Treemap({
   const tooltipSeqRef = useRef(0);
   const tooltipTimerRef = useRef(0);
   const lastMouseRef = useRef({ x: 0, y: 0 });
+  /** Ids of the plates the layout did not subdivide — the ones a click can
+   *  open. Rebuilt with each response, same one-pass test `drawLabels` uses. */
+  const platesRef = useRef<Set<number>>(new Set());
+  /** The one directory the user opened by hand. Mirrors `forceOpenId`. */
+  const forceOpenRef = useRef<number | null>(null);
+  /** A click waiting out the double-click window, and its sequence number. */
+  const pendingRef = useRef<{ id: number; collapse: boolean } | null>(null);
+  const pendingSeqRef = useRef(0);
+  const pendingTimerRef = useRef(0);
 
   const generationRef = useRef(generation);
   generationRef.current = generation;
@@ -262,6 +321,8 @@ export function Treemap({
   const [crumbs, setCrumbs] = useState<Crumb[]>([]);
   const [tooltip, setTooltip] = useState<TooltipData | null>(null);
   const [hasRects, setHasRects] = useState(false);
+  const [forceOpenId, setForceOpenId] = useState<number | null>(null);
+  forceOpenRef.current = forceOpenId;
 
   const drawOverlay = useCallback(() => {
     const overlay = overlayRef.current;
@@ -337,7 +398,7 @@ export function Treemap({
     ctx.fillRect(0, 0, off.width, off.height);
 
     ctx.fillStyle = ctx.createPattern(
-      getGrainTile(theme.plate, theme.plateGrain),
+      getGrainTile(FOLDER_PLATE, FOLDER_GRAIN),
       "repeat",
     )!;
     ctx.beginPath();
@@ -351,12 +412,12 @@ export function Treemap({
     // A plate with no children is the final answer for the space it covers,
     // and it needs a seam — the grain under it is one continuous pattern, so
     // thirty folders of equal size would otherwise draw as a single flat
-    // field with nothing to say where one ends. Painting the seam means
-    // painting the background over it: the parent's plate is underneath, and
-    // a gap alone would just show more of the same texture. Plates that *do*
-    // have children are only backing for them and get nothing, or every
-    // subdivided directory would ring itself in a hairline frame.
-    ctx.fillStyle = theme.background;
+    // field with nothing to say where one ends. The seam has to be painted:
+    // the parent's plate is underneath, and a gap alone would just show more
+    // of the same texture. Plates that *do* have children are only backing
+    // for them and get nothing, or every subdivided directory would ring
+    // itself in a hairline frame.
+    ctx.fillStyle = FOLDER_SEAM;
     ctx.beginPath();
     for (let i = 0; i < rects.length; i++) {
       const r = rects[i];
@@ -443,19 +504,67 @@ export function Treemap({
         h,
         hideSystemRef.current,
         filterRef.current,
+        forceOpenRef.current,
       );
       if (seq !== fetchSeqRef.current || forRoot !== rootIdRef.current) return;
       rectsRef.current = rects;
       byIdRef.current = new Map(rects.map((r) => [r.id, r]));
+      platesRef.current = solidPlates(rects);
       hitFrozenRef.current = false;
       setHasRects(rects.length > 0);
       bake();
       if (crumbsRootRef.current !== forRoot) refreshCrumbs();
+      // The folder the user opened is open — but if the biggest thing in it
+      // still came out too small to read, opening it in place achieved
+      // nothing. Zoom it instead: at that point the only useful thing to do
+      // with it is fill the view and look inside properly.
+      const opened = forceOpenRef.current;
+      if (
+        opened !== null &&
+        opened !== forRoot &&
+        revealedTooSmall(rects, opened)
+      ) {
+        // Through the prop, not `drillTo`: that is declared below this one and
+        // calls it back, so depending on it here would be a cycle. App's
+        // handler is a stable useCallback either way.
+        onNavigate(opened);
+      }
     } catch (e) {
       reportUnlessStale("loading treemap", e);
       if (seq === fetchSeqRef.current) hitFrozenRef.current = false;
     }
-  }, [bake, refreshCrumbs]);
+  }, [bake, refreshCrumbs, onNavigate]);
+
+  /**
+   * A click on a plate is ambiguous until the double-click window closes: it
+   * could be "open this" or the first half of "zoom into this". So that one
+   * action waits, and only that one — everything else acts on the spot, and
+   * `handleDoubleClick` cancels what is waiting. `pendingRef` doubles as the
+   * flag: it is non-null exactly while a click has yet to be acted on.
+   */
+  const arm = useCallback((id: number, collapse: boolean) => {
+    window.clearTimeout(pendingTimerRef.current);
+    const seq = ++pendingSeqRef.current;
+    const generation = generationRef.current;
+    const forRoot = rootIdRef.current;
+    pendingRef.current = { id, collapse };
+    pendingTimerRef.current = window.setTimeout(() => {
+      if (seq !== pendingSeqRef.current) return;
+      // A scan tick re-fetching underneath us is not a reason to drop the
+      // click — the id is what the action applies to, and those are stable
+      // within a generation. Leaving the tree or starting a new scan is.
+      if (generation !== generationRef.current) return;
+      if (forRoot !== rootIdRef.current) return;
+      if (!byIdRef.current.has(id)) return;
+      setForceOpenId(collapse ? null : id);
+    }, DOUBLE_CLICK_MS);
+  }, []);
+
+  const cancelPending = useCallback(() => {
+    pendingRef.current = null;
+    window.clearTimeout(pendingTimerRef.current);
+    pendingSeqRef.current++;
+  }, []);
 
   const drillTo = useCallback(
     (id: number) => {
@@ -465,6 +574,12 @@ export function Treemap({
       hitFrozenRef.current = true;
       setTooltip(null);
       mouseOverRef.current = null;
+      cancelPending();
+      // The open folder follows the view only into itself. Zooming into it
+      // should show what is inside — without this it would arrive as the root
+      // and be folded back into one plate by the same rule that folded it
+      // here. Anywhere else, the accordion is about a view you have left.
+      setForceOpenId((open) => (open === id ? open : null));
       drawOverlay(); // clear rings: they describe the view being left
 
       const base = baseRef.current;
@@ -500,7 +615,7 @@ export function Treemap({
 
       void fetchLayout();
     },
-    [blit, drawOverlay, fetchLayout],
+    [blit, drawOverlay, fetchLayout, cancelPending],
   );
 
   useEffect(() => {
@@ -511,6 +626,7 @@ export function Treemap({
     rootIdRef.current = 0;
     rectsRef.current = [];
     byIdRef.current = new Map();
+    platesRef.current = new Set();
     setHasRects(false);
     setCrumbs([]);
     setTooltip(null);
@@ -519,10 +635,16 @@ export function Treemap({
     crumbsRootRef.current = null;
     crumbIdsRef.current = new Set();
     offscreenRef.current = null;
+    // Ids belong to a tree, and this is a different one. Holding an open
+    // folder across scans would open whatever now happens to have that id.
+    cancelPending();
+    setForceOpenId(null);
     const base = baseRef.current;
     if (base) base.getContext("2d")!.clearRect(0, 0, base.width, base.height);
     if (generation !== 0) void fetchLayout();
-  }, [generation, fetchLayout]);
+  }, [generation, fetchLayout, cancelPending]);
+
+  useEffect(() => cancelPending, [cancelPending]);
 
   useEffect(() => {
     drawOverlay();
@@ -540,6 +662,14 @@ export function Treemap({
   useEffect(() => {
     void fetchLayout();
   }, [hideSystem, filter, fetchLayout]);
+
+  useEffect(() => {
+    // The open folder is a layout input, not a paint-time one: only the
+    // backend can decide what a directory hides. Read through the ref inside
+    // `fetchLayout`, keyed on the value here — the callback's identity has to
+    // stay put, or this cascades into the size effect and double-fetches.
+    void fetchLayout();
+  }, [forceOpenId, fetchLayout]);
 
   useEffect(() => {
     // Labels are painted over the baked layout, never into it: toggling them
@@ -702,9 +832,26 @@ export function Treemap({
     (e: React.MouseEvent) => {
       const bounds = containerRef.current!.getBoundingClientRect();
       const hit = hitTest(e.clientX - bounds.left, e.clientY - bounds.top);
-      if (hit) onSelect(hit);
+      if (!hit) return;
+      // The folder that is open is the one case a click closes: it has
+      // children now, so nothing below would offer to.
+      if (hit.id === forceOpenRef.current) {
+        arm(hit.id, true);
+        return;
+      }
+      onSelect(hit);
+      // A plate has nothing to zoom into without opening first, so the click
+      // opens it — unless it turns out to be too small to be worth showing in
+      // place, which `fetchLayout` answers by zooming instead.
+      if (hit.isDir && platesRef.current.has(hit.id)) {
+        arm(hit.id, false);
+        return;
+      }
+      // A directory the layout did choose to subdivide: single click zooms, as
+      // it always has.
+      if (hit.isDir) onNavigate(hit.id);
     },
-    [hitTest, onSelect],
+    [hitTest, onSelect, onNavigate, arm],
   );
 
   const handleContextMenu = useCallback(
@@ -725,12 +872,17 @@ export function Treemap({
 
   const handleDoubleClick = useCallback(
     (e: React.MouseEvent) => {
-      if (zoomRafRef.current !== 0) return;
       const bounds = containerRef.current!.getBoundingClientRect();
-      const region = regionAt(e.clientX - bounds.left, e.clientY - bounds.top);
-      if (region) onNavigate(region.id);
+      const hit = hitTest(e.clientX - bounds.left, e.clientY - bounds.top);
+      if (!hit?.isDir || hit.id === rootIdRef.current) return;
+      // Nothing waiting means the first click already acted — it zoomed, or it
+      // selected a file — and a second zoom on top of that is not what anyone
+      // asked for.
+      if (pendingRef.current === null) return;
+      cancelPending();
+      onNavigate(hit.id);
     },
-    [regionAt, onNavigate],
+    [hitTest, onNavigate, cancelPending],
   );
 
   const zoomOut = useCallback(() => {
