@@ -161,18 +161,6 @@ function drawLabels(
 }
 
 /**
- * Corner radius, as a fraction of the block's short side, with a ceiling and
- * a floor. The ratio is what makes a big block read as a rounded card; the
- * ceiling is what keeps a half-map-sized block from looking like a pill; and
- * the floor is what keeps a 6px block square — rounding the smallest blocks
- * turns a dense corner of the map into a field of dots, and those are the
- * blocks there are most of.
- */
-const CORNER_RATIO = 0.1;
-const CORNER_MAX_PX = 7;
-const CORNER_MIN_SIDE_PX = 8;
-
-/**
  * The light on the top of a block: a fade from the top edge, at most this
  * tall. Only blocks with a short side this big get one — on a 6px block the
  * light is the whole block.
@@ -198,42 +186,6 @@ function snap(r: TreemapRect, dpr: number, gap: number): Snapped {
 /** The same rect in device pixels, fractional — the camera's unit. */
 function frame(r: TreemapRect, dpr: number): Snapped {
   return { x: r.x * dpr, y: r.y * dpr, w: r.w * dpr, h: r.h * dpr };
-}
-
-function cornerRadius(s: Snapped, dpr: number): number {
-  const min = Math.min(s.w, s.h);
-  if (min < CORNER_MIN_SIDE_PX * dpr) return 0;
-  return Math.min(min * CORNER_RATIO, CORNER_MAX_PX * dpr);
-}
-
-/**
- * `roundRect` is a path method like `rect`, so the batching that paints the
- * map by colour survives; it is just newer than `rect`. The arcs are only for
- * a runtime too old to have it, which is not one this ships against.
- */
-function roundRectPath(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-  r: number,
-) {
-  if (r <= 0) {
-    ctx.rect(x, y, w, h);
-    return;
-  }
-  if (typeof ctx.roundRect === "function") {
-    ctx.roundRect(x, y, w, h, r);
-    return;
-  }
-  const a = Math.min(r, w / 2, h / 2);
-  ctx.moveTo(x + a, y);
-  ctx.arcTo(x + w, y, x + w, y + h, a);
-  ctx.arcTo(x + w, y + h, x, y + h, a);
-  ctx.arcTo(x, y + h, x, y, a);
-  ctx.arcTo(x, y, x + w, y, a);
-  ctx.closePath();
 }
 
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
@@ -514,8 +466,6 @@ export function Treemap({
     if (hitFrozenRef.current) return;
     const dpr = window.devicePixelRatio || 1;
     const theme = canvasColors();
-    // The ring follows the block's own corners — a square outline around a
-    // rounded block shows the four corners it does not have.
     const outline = (id: number | null, color: string, width: number) => {
       if (id === null || id === rootIdRef.current) return;
       const r = byIdRef.current.get(id);
@@ -524,16 +474,7 @@ export function Treemap({
       const half = width / 2;
       ctx.strokeStyle = color;
       ctx.lineWidth = width;
-      ctx.beginPath();
-      roundRectPath(
-        ctx,
-        s.x + half,
-        s.y + half,
-        s.w - width,
-        s.h - width,
-        Math.max(0, cornerRadius(s, dpr) - half),
-      );
-      ctx.stroke();
+      ctx.strokeRect(s.x + half, s.y + half, s.w - width, s.h - width);
     };
     outline(selectedRef.current, theme.selection, 2);
     const hovered = hoveredIdRef.current;
@@ -633,10 +574,10 @@ export function Treemap({
       ctx.fillRect(0, 0, off.width, off.height);
 
       // Folders are drawn exactly like files — one flat colour, a 1px gap, the
-      // same light over the top, the same rounded corners — and differ only in
-      // the colour. Anything more than that (a texture, a seam, a reserved
-      // strip) makes a folder read as a surface rather than as a block, which
-      // is what a plate full of small files should look like.
+      // same light over the top — and differ only in the colour. Anything more
+      // than that (a texture, a seam, a reserved strip) makes a folder read as
+      // a surface rather than as a block, which is what a plate full of small
+      // files should look like.
       const colors = colorsNow();
       const plates = solidPlates(rects);
       ctx.fillStyle = colors.folder;
@@ -644,8 +585,7 @@ export function Treemap({
       for (const r of rects) {
         if (!plates.has(r.id)) continue;
         const s = snap(r, dpr, 1);
-        if (s.w > 0 && s.h > 0)
-          roundRectPath(ctx, s.x, s.y, s.w, s.h, cornerRadius(s, dpr));
+        if (s.w > 0 && s.h > 0) ctx.rect(s.x, s.y, s.w, s.h);
       }
       ctx.fill();
 
@@ -660,8 +600,7 @@ export function Treemap({
         ctx.beginPath();
         for (const r of bucket) {
           const s = snap(r, dpr, 1);
-          if (s.w > 0 && s.h > 0)
-            roundRectPath(ctx, s.x, s.y, s.w, s.h, cornerRadius(s, dpr));
+          if (s.w > 0 && s.h > 0) ctx.rect(s.x, s.y, s.w, s.h);
         }
         ctx.fill();
       }
@@ -693,9 +632,7 @@ export function Treemap({
         g.addColorStop(1, "rgba(255, 255, 255, 0)");
         ctx.fillStyle = g;
         ctx.beginPath();
-        for (const s of row) {
-          roundRectPath(ctx, s.x, s.y, s.w, s.h, cornerRadius(s, dpr));
-        }
+        for (const s of row) ctx.rect(s.x, s.y, s.w, s.h);
         ctx.fill();
       }
 
@@ -804,6 +741,14 @@ export function Treemap({
    *
    * The old picture is the canvas as it stands, so this has to run before the
    * new one is baked over it.
+   *
+   * Names are *not* faded out for this one, unlike a zoom. Nothing on the label
+   * layer is being transformed — the two frames here differ only inside the
+   * folder's own frame, and the names that are neither inside the one opening
+   * nor inside the one closing are identical before and after — so fading them
+   * would blink the whole map's text for a change that touched two folders.
+   * They are repainted for the layout arriving, which is what the map is about
+   * to become.
    */
   const morph = useCallback(
     (to: TreemapRect[], opens: number[], closes: number[]) => {
@@ -865,16 +810,14 @@ export function Treemap({
           morphRafRef.current = 0;
           blit();
           hitFrozenRef.current = false;
-          fadeLabels(1, LABEL_FADE_IN_MS);
           drawOverlay();
         }
       };
       hitFrozenRef.current = true;
-      fadeLabels(0, LABEL_FADE_OUT_MS);
       cancelAnimationFrame(morphRafRef.current);
       morphRafRef.current = requestAnimationFrame(step);
     },
-    [bake, blit, drawOverlay, fadeLabels],
+    [bake, blit, drawOverlay],
   );
 
   /**
