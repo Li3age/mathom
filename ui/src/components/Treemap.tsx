@@ -16,7 +16,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { activeTheme, type AccentName, type ColorMode } from "../lib/theme";
+import type { AccentName, ColorMode } from "../lib/theme";
 import {
   api,
   type Crumb,
@@ -241,6 +241,28 @@ function scaleAbout(
   ctx.restore();
 }
 
+/**
+ * Slivers: blocks that are a line rather than a rectangle. A squarified layout
+ * still leaves them — a remainder along an edge that had nowhere else to go
+ * comes out as, say, 10px by 600 — and they are worth less than the space they
+ * take: they cannot hold a name, they read as a fringe along the map's edge
+ * rather than as blocks, and hovering one draws a ring around something that
+ * is not visibly there. Dropped when the layout arrives, so the paint, the hit
+ * test, the labels and the open/close diff all agree about what the map is.
+ *
+ * Both numbers matter: a 12px strip is fine if it is short, and a long block is
+ * fine if it is thick. It takes both being wrong to make one of these.
+ */
+const SLIVER_MAX_SIDE_PX = 10;
+const SLIVER_ASPECT = 4;
+
+function isSliver(r: TreemapRect): boolean {
+  const short = Math.min(r.w, r.h);
+  return (
+    short < SLIVER_MAX_SIDE_PX && Math.max(r.w, r.h) > short * SLIVER_ASPECT
+  );
+}
+
 /** Rects with no children of their own — the ones a click can open. */
 function solidPlates(rects: TreemapRect[]): Set<number> {
   const plates = new Set<number>();
@@ -424,13 +446,13 @@ export function Treemap({
   modeRef.current = mode;
 
   /**
-   * The block colours in force right now — the colour mode the setting asks
-   * for, the accent, and the theme the document actually resolved to. Read at
-   * paint time rather than passed around, because a bake happens long after
-   * the render that asked for it and only the current values matter.
+   * The block colours in force right now: the colour mode the setting asks
+   * for, and the accent when it is multi. Read at paint time rather than
+   * passed around, because a bake happens long after the render that asked
+   * for it and only the current values matter.
    */
   const colorsNow = useCallback(
-    () => blockColors(modeRef.current, accentRef.current, activeTheme()),
+    () => blockColors(modeRef.current, accentRef.current),
     [],
   );
 
@@ -883,16 +905,18 @@ export function Treemap({
     const forRoot = rootIdRef.current;
     lastFetchRef.current = performance.now();
     try {
-      const rects = await api.getTreemap(
-        generation,
-        forRoot,
-        w,
-        h,
-        hideSystemRef.current,
-        filterRef.current,
-        forceOpenRef.current,
-        maxDepthRef.current,
-      );
+      const rects = (
+        await api.getTreemap(
+          generation,
+          forRoot,
+          w,
+          h,
+          hideSystemRef.current,
+          filterRef.current,
+          forceOpenRef.current,
+          maxDepthRef.current,
+        )
+      ).filter((r) => !isSliver(r));
       if (seq !== fetchSeqRef.current || forRoot !== rootIdRef.current) {
         morphRef.current = false;
         return;

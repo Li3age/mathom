@@ -25,58 +25,32 @@ export function folderPlate(accent: AccentName): string {
 }
 
 /**
- * The classic scheme: one colour for files, one for folders, ten of them —
- * five accents, each tuned for the theme it will be seen in.
+ * The classic scheme: one colour for files, one for folders.
  *
- * Two hues, then, and they carry different jobs: the *hue* says folder or
- * file, and the *lightness* says how deep in you are. That is why the file has
- * to start light and stay light — the ramp runs downwards, and a colour that
- * starts dark has nowhere to go. The pair is a hue and its partner about 155°
- * round the wheel, which is far enough to never be mistaken at a glance and
- * near enough to stay a pair rather than two colours that happen to be there.
+ * One pair, the same under every accent and in both themes. Five of them was
+ * five answers to a question nobody asked — the accent sets the window's
+ * accent, and the map has one pair of colours it paints in; a map whose whole
+ * palette changed with the accent was five maps to learn instead of one. The
+ * accent still decides the folder colour in `multi`, where the file types are
+ * the point.
  *
- * The file starts 0.13 of lightness above the folder and the ramp spans 0.09,
- * so the two runs stay apart at every depth — the deepest file is still lighter
- * than the shallowest folder. That invariant is the reason for the numbers,
- * and it is also why the file was not made paler: on a plate this pale, a
- * lighter file stops being a block at all.
+ * Two hues, and they carry different jobs: the *hue* says folder or file, and
+ * the *lightness* says how deep in you are. The folder is the warm one, the
+ * file the cool one; the folder is the lighter and the file the deeper, the
+ * way round a printed map is drawn — the folder is the surface you are looking
+ * at, the file is the ink on it.
  *
- * The light theme is not the dark theme's values reused. A colour sits
- * differently on a pale plate than on a dark one, so the file tone goes up
- * again for the dark theme (0.76 → 0.82) rather than down. The hues are the
- * one thing that does not move, so a scheme is recognisably the same scheme in
- * either theme.
- *
- * Values are OKLCH. Light: folder L 0.630 C 0.070, file L 0.760 C 0.085.
- * Dark: folder L 0.725 C 0.058, file L 0.820 C 0.070.
+ * That the two are 0.13 apart in OKLab lightness matters more than it sounds:
+ * the level ramp spans 0.09, so at no depth does the deepest file reach the
+ * shallowest folder. Two runs any closer would meet in the middle of the ramp
+ * and a deep file would read as a shallow folder.
  */
 export interface Scheme {
   folder: string;
   file: string;
 }
 
-export const CLASSIC: Record<AccentName, { dark: Scheme; light: Scheme }> = {
-  teal: {
-    dark: { folder: "#7bb2b1", file: "#e7b2cc" },
-    light: { folder: "#529795", file: "#da9bbb" },
-  },
-  blue: {
-    dark: { folder: "#8da9cb", file: "#ebb79d" },
-    light: { folder: "#6c8cb3", file: "#dea181" },
-  },
-  violet: {
-    dark: { folder: "#ab9fc6", file: "#d3c490" },
-    light: { folder: "#8f80ae", file: "#c2b171" },
-  },
-  rose: {
-    dark: { folder: "#c89994", file: "#91d4c6" },
-    light: { folder: "#b07974", file: "#70c3b3" },
-  },
-  green: {
-    dark: { folder: "#90b090", file: "#cabbec" },
-    light: { folder: "#6f956f", file: "#b9a5e0" },
-  },
-};
+export const CLASSIC: Scheme = { folder: "#dea181", file: "#6c8cb3" };
 
 /**
  * Level contrast: the same colour, a step darker for each level of nesting.
@@ -179,16 +153,11 @@ export interface BlockColors {
  * every category holding the same colour, so the painting code does not need
  * to know which mode it is in.
  */
-export function blockColors(
-  mode: ColorMode,
-  accent: AccentName,
-  theme: "light" | "dark",
-): BlockColors {
+export function blockColors(mode: ColorMode, accent: AccentName): BlockColors {
   if (mode === "classic") {
-    const scheme = CLASSIC[accent]?.[theme] ?? CLASSIC.teal.dark;
-    const files = ramp(scheme.file);
+    const files = ramp(CLASSIC.file);
     return {
-      folder: ramp(scheme.folder),
+      folder: ramp(CLASSIC.folder),
       // Every category wears the same ramp — that is what "classic" means.
       byCategory: PALETTE.map(() => files),
     };
