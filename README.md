@@ -1,12 +1,12 @@
 # mathom-SpaceSniffer-Style
 
-**Windows 磁盘空间分析器 —— 界面做成了 SpaceSniffer 那一派的样子。**
+**Windows 磁盘空间分析器 —— SpaceSniffer外观版本。**
 
 扫描一块盘，看清空间到底去哪了：实时文件夹树、可缩放的矩形树图（treemap）、文件类型分布、搜索，以及删除到回收站。
 
 这是 [mathom](https://github.com/gitRasheed/mathom) 的一个个人分支。扫描后端（MFT 读取、目录遍历）是上游原样；**地图从布局到绘制整个重做了**：文件夹一个色系、文件一个色系，靠明度深浅读出嵌套层级。
 
-![mathom-SpaceSniffer-Style 扫完一块盘：左边是文件夹树，右边是矩形树图](docs/screenshot.png)
+<img width="1920" height="1065" alt="image" src="https://github.com/user-attachments/assets/2fabd93f-3732-48c7-af53-01f4f0cec349" />
 
 ---
 
@@ -51,25 +51,6 @@ npm run dev          # 开发模式，热重载
 npm run build:app    # release 构建 + 安装包
 cargo test --workspace
 ```
-
-### 手工构建 release 时必须带 `custom-protocol`
-
-```text
-cargo build --release --target x86_64-pc-windows-msvc --features custom-protocol
-```
-
-不带的话 `generate_context!` 会把前端解析到 `build.devUrl`（见 tauri-macros 的 `src/context.rs`），出来的 exe 指着一个 `http://localhost:1420`，没有 dev server 就是 `ERR_CONNECTION_REFUSED`。`tauri build` 会自动带上这个 feature，纯 `cargo build --release` 不会。这个 feature 在上游的 manifest 里根本没声明，所以在此之前每一个手工构建交出去的 exe 都是坏的。
-
-### 想要单文件，就用 MSVC
-
-mingw（`x86_64-pc-windows-gnu`）编出来的产物**必须外挂 `WebView2Loader.dll`**。原因在依赖源码 `webview2-com-sys/src/lib.rs`：
-
-```rust
-#[cfg_attr(target_env = "msvc", link(name = "WebView2LoaderStatic", kind = "static"))]
-#[cfg_attr(not(target_env = "msvc"), link(name = "WebView2Loader.dll"))]
-```
-
-这是编译期分支，不是代码问题。官方 release 的单文件约定就是靠 MSVC 达成的——所以要么在真 Windows 上编，要么推 tag 走 GitHub Actions 的 `windows-latest`（见 `.github/workflows/release.yml`）。
 
 ## 布局
 
@@ -133,25 +114,6 @@ npm run dev          # development app with hot reload
 npm run build:app    # release build + installers
 cargo test --workspace
 ```
-
-### A hand-built release needs `custom-protocol`
-
-```text
-cargo build --release --target x86_64-pc-windows-msvc --features custom-protocol
-```
-
-Without it, `generate_context!` resolves the frontend to `build.devUrl` (tauri-macros, `src/context.rs`), so the binary opens on `http://localhost:1420` and `ERR_CONNECTION_REFUSED` unless a dev server happens to be running. `tauri build` passes the feature; a plain `cargo build --release` does not. The feature was never declared in upstream's manifest, which is exactly how every hand-built exe of this app shipped broken.
-
-### Single file means MSVC
-
-A mingw (`x86_64-pc-windows-gnu`) build **must ship `WebView2Loader.dll` alongside it**. The reason is in a dependency's source, `webview2-com-sys/src/lib.rs`:
-
-```rust
-#[cfg_attr(target_env = "msvc", link(name = "WebView2LoaderStatic", kind = "static"))]
-#[cfg_attr(not(target_env = "msvc"), link(name = "WebView2Loader.dll"))]
-```
-
-That is a compile-time branch, not a defect in this code. The official single-file releases get there through MSVC — so build on a real Windows box, or push a tag and let GitHub Actions' `windows-latest` do it (see `.github/workflows/release.yml`).
 
 ## Layout
 
