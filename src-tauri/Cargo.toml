@@ -11,6 +11,17 @@ license = "MIT"
 default = ["mft-backend"]
 mft-backend = ["mathom-scanner-ntfs/mft-backend"]
 
+# Serve the built UI out of the binary. Without it `generate_context!` resolves
+# `dev: cfg!(not(feature = "custom-protocol"))` to true (tauri-macros,
+# src/context.rs), which sends the window at `build.devUrl` — so a release
+# binary built without it opens on ERR_CONNECTION_REFUSED unless a dev server
+# happens to be running. `tauri build` passes it; a plain `cargo build
+# --release` does not, which is exactly how every hand-built exe of this app
+# shipped broken. Build releases with:
+#   cargo build --release --target <triple> --features custom-protocol
+# It stays opt-in because the dev loop needs the opposite answer.
+custom-protocol = ["tauri/custom-protocol"]
+
 [dependencies]
 mathom-core = { version = "0.2.2", path = "../crates/core" }
 mathom-scanner = { version = "0.2.2", path = "../crates/scanner" }
