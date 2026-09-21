@@ -28,23 +28,28 @@ export function folderPlate(accent: AccentName): string {
  * The classic scheme: one colour for files, one for folders, ten of them —
  * five accents, each tuned for the theme it will be seen in.
  *
- * The folder colour is the map's tone, so it is the accent's own hue at the
- * weight the map already uses for its plates. The file colour is that *same
- * hue, lighter*: the map then has one colour in two weights, and the weights
- * are the only thing it needs to say — a dark block still has something inside
- * it, a light one is the end of the branch. Two unrelated hues, which is what
- * the eleven-category palette amounts to, say nothing at a glance; this says
- * one thing instantly.
+ * The folder is the *lighter* of the two and the file the deeper one, which is
+ * the way round a printed map is drawn: the folder is the surface you are
+ * looking at, the file is the ink on it. It also has to be this way round for
+ * the level ramp to work — both colours darken with depth, so the two runs
+ * have to start far enough apart that they never meet. At a gap of 0.23 in
+ * OKLab lightness and a ramp that spans 0.09, the closest a deep file ever
+ * gets to a shallow folder is 0.14: they cannot be mistaken for each other at
+ * any depth, which is the whole reason for picking the pair this way rather
+ * than by eye.
+ *
+ * Same hue for both, because "this is a folder and this is a file" is one
+ * distinction, and spending two hues on it is what the eleven-category palette
+ * already does badly.
  *
  * The light theme is not the dark theme's values reused. A colour sits
- * differently on a pale plate than on a dark one — the same teal that reads as
- * a solid surface on near-black goes chalky on #d8d9dc — so each scheme is
- * deepened and given a little more chroma for the light theme. The hue is the
- * one thing that does not move, so a scheme is recognisably the same scheme in
- * either theme.
+ * differently on a pale plate than on a dark one, so the file tone comes up
+ * for the dark theme (0.40 → 0.50) — deep enough to separate from the folder,
+ * light enough to stand off a near-black plate. The hue is the one thing that
+ * does not move, so a scheme is recognisably the same scheme in either theme.
  *
- * Values are OKLCH: dark folder L 0.525 C 0.038, dark file L 0.725 C 0.058,
- * light folder L 0.470 C 0.055, light file L 0.630 C 0.070.
+ * Values are OKLCH. Light: folder L 0.630 C 0.070, file L 0.400 C 0.080.
+ * Dark: folder L 0.725 C 0.058, file L 0.500 C 0.065.
  */
 export interface Scheme {
   folder: string;
@@ -53,24 +58,24 @@ export interface Scheme {
 
 export const CLASSIC: Record<AccentName, { dark: Scheme; light: Scheme }> = {
   teal: {
-    dark: { folder: "#507271", file: "#7bb2b1" },
-    light: { folder: "#326564", file: "#529795" },
+    dark: { folder: "#7bb2b1", file: "#2f6f6e" },
+    light: { folder: "#529795", file: "#005554" },
   },
   blue: {
-    dark: { folder: "#5c6c80", file: "#8da9cb" },
-    light: { folder: "#455d79", file: "#6c8cb3" },
+    dark: { folder: "#8da9cb", file: "#496588" },
+    light: { folder: "#6c8cb3", file: "#274972" },
   },
   violet: {
-    dark: { folder: "#6d667d", file: "#ab9fc6" },
-    light: { folder: "#5f5476", file: "#8f80ae" },
+    dark: { folder: "#ab9fc6", file: "#685b83" },
+    light: { folder: "#8f80ae", file: "#4e3d6c" },
   },
   rose: {
-    dark: { folder: "#7f625f", file: "#c89994" },
-    light: { folder: "#774f4b", file: "#b07974" },
+    dark: { folder: "#c89994", file: "#855550" },
+    light: { folder: "#b07974", file: "#6c3531" },
   },
   green: {
-    dark: { folder: "#5d705d", file: "#90b090" },
-    light: { folder: "#476348", file: "#6f956f" },
+    dark: { folder: "#90b090", file: "#4b6d4c" },
+    light: { folder: "#6f956f", file: "#29532b" },
   },
 };
 

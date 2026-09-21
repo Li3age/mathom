@@ -55,8 +55,12 @@ export default function App() {
   const [viewRootId, setViewRootId] = useState(0);
   const [hoveredId, setHoveredId] = useState<number | null>(null);
   const [revealId, setRevealId] = useState<number | null>(null);
-  const [treeWidth, setTreeWidth] = useState(560);
-  const [typePanelOpen, setTypePanelOpen] = useState(true);
+  // Both side panels start closed and at their narrowest: the map is the
+  // point of the window, and the type panel in particular is a picture of the
+  // file-type distribution that only means something in the colour mode that
+  // paints by file type.
+  const [treeWidth, setTreeWidth] = useState(TREE_PANE_MIN);
+  const [typePanelOpen, setTypePanelOpen] = useState(false);
   const [uiError, setUiError] = useState<string | null>(null);
   const [menu, setMenu] = useState<{
     x: number;
