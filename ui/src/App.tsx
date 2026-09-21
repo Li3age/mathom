@@ -430,6 +430,7 @@ export default function App() {
             hideSystem={scan.hideSystem}
             filter={scan.filter}
             labels={scan.showLabels}
+            accent={theme.accent}
             maxDepth={layoutDepth(scan.depth)}
             selected={selected}
             hoveredId={hoveredId}

@@ -16,6 +16,7 @@ import {
   useRef,
   useState,
 } from "react";
+import type { AccentName } from "../lib/theme";
 import {
   api,
   type Crumb,
@@ -25,13 +26,42 @@ import {
 } from "../lib/api";
 import { isStale, reportUnlessStale } from "../lib/errors";
 import { formatBytes, formatPercent } from "../lib/format";
-import { FOLDER_PLATE, PALETTE, canvasColors, textOn } from "../lib/palette";
+import {
+  BEVEL_DARK,
+  BEVEL_LIGHT,
+  PALETTE,
+  canvasColors,
+  folderPlate,
+  textOn,
+} from "../lib/palette";
 
 const SCAN_REFRESH_MS = 400;
-const ZOOM_MS = 220;
 const TOOLTIP_DELAY_MS = 120;
-/** How long the map takes to settle into a new layout. */
-const MORPH_MS = 160;
+
+/**
+ * How long each kind of change takes. One place, because a map whose blocks
+ * move at one speed and whose view zooms at another reads as two things
+ * happening rather than one.
+ */
+const MOTION = {
+  /** Changing the view root — the picture scaling into its new place. */
+  zoom: 220,
+  /** A folder opening or closing inside the view. */
+  open: 160,
+  /** The same map refitted: a resize, a filter, another scan tick. */
+  move: 150,
+  /** Refits smaller than this are the scan breathing, not the map moving. */
+  moveMinPx: 2,
+} as const;
+
+const easeOut = (t: number) => 1 - (1 - t) * (1 - t);
+
+/** The system asking for less motion is not a suggestion. */
+function reducedMotion(): boolean {
+  return (
+    window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false
+  );
+}
 
 /** Mirrors the body font stack in index.css so canvas text matches the DOM's. */
 const LABEL_FONT = 'ui-sans-serif, system-ui, "Segoe UI", sans-serif';
@@ -90,6 +120,7 @@ function drawLabels(
   ctx: CanvasRenderingContext2D,
   rects: TreemapRect[],
   dpr: number,
+  folder: string,
 ) {
   ctx.font = `${LABEL_SIZE_PX * dpr}px ${LABEL_FONT}`;
   ctx.textBaseline = "middle";
@@ -106,7 +137,7 @@ function drawLabels(
     const s = snap(r, dpr, 1);
     if (s.w < minW || s.h < LABEL_MIN_H_PX * dpr) continue;
     ctx.fillStyle = textOn(
-      r.isDir ? FOLDER_PLATE : (PALETTE[r.category] ?? PALETTE[10]),
+      r.isDir ? folder : (PALETTE[r.category] ?? PALETTE[10]),
     );
     const name = fitText(ctx, r.name, s.w - 2 * pad);
     if (!name) continue;
@@ -120,23 +151,11 @@ function drawLabels(
   }
 }
 
-let highlightSprite: HTMLCanvasElement | null = null;
-
-function getHighlightSprite(): HTMLCanvasElement {
-  if (highlightSprite) return highlightSprite;
-  const c = document.createElement("canvas");
-  c.width = 128;
-  c.height = 128;
-  const ctx = c.getContext("2d")!;
-  const g = ctx.createRadialGradient(40, 32, 0, 64, 64, 120);
-  g.addColorStop(0, "rgba(255,255,255,0.30)");
-  g.addColorStop(0.55, "rgba(255,255,255,0.03)");
-  g.addColorStop(1, "rgba(0,0,0,0.28)");
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, 128, 128);
-  highlightSprite = c;
-  return c;
-}
+/**
+ * Blocks big enough to carry an edge. On a 6px block a 2px bevel eats a third
+ * of it, and the smallest blocks are the ones there are most of.
+ */
+const BEVEL_MIN_PX = 12;
 
 interface Snapped {
   x: number;
@@ -207,8 +226,10 @@ export interface TreemapProps {
   hideSystem: boolean;
   /** Active view filter (search grammar) or null. */
   filter: string | null;
-  /** Draw each block's name and size inside it. Off by default. */
+  /** Draw each block's name and size inside it. On by default. */
   labels: boolean;
+  /** Which colour scheme the map paints in — the same choice as the accent. */
+  accent: AccentName;
   /**
    * Depth setting: null is Auto, where the layout decides how deep to go.
    * A number is a fixed cap, which is a *different* layout rule, not just a
@@ -238,6 +259,7 @@ export function Treemap({
   hideSystem,
   filter,
   labels,
+  accent,
   maxDepth,
   selected,
   hoveredId,
@@ -271,10 +293,10 @@ export function Treemap({
   const platesRef = useRef<Set<number>>(new Set());
   /** The one directory the user opened by hand. Mirrors `forceOpenId`. */
   const forceOpenRef = useRef<number | null>(null);
-  /** The picture being dissolved away from, while a layout settles in. */
   const wasRef = useRef<HTMLCanvasElement | null>(null);
   const morphRef = useRef(false);
   const morphRafRef = useRef(0);
+  const moveRafRef = useRef(0);
 
   const generationRef = useRef(generation);
   generationRef.current = generation;
@@ -290,6 +312,8 @@ export function Treemap({
   labelsRef.current = labels;
   const maxDepthRef = useRef(maxDepth);
   maxDepthRef.current = maxDepth;
+  const accentRef = useRef(accent);
+  accentRef.current = accent;
 
   const [crumbs, setCrumbs] = useState<Crumb[]>([]);
   const [tooltip, setTooltip] = useState<TooltipData | null>(null);
@@ -353,7 +377,7 @@ export function Treemap({
   }, [drawOverlay]);
 
   const bake = useCallback(
-    (drawn: TreemapRect[] = rectsRef.current) => {
+    (drawn: TreemapRect[] = rectsRef.current, withLabels = true) => {
       const base = baseRef.current;
       if (!base || base.width === 0) return;
       let off = offscreenRef.current;
@@ -382,7 +406,7 @@ export function Treemap({
       // surface rather than as a block, which is what a plate full of small
       // files should look like.
       const plates = solidPlates(rects);
-      ctx.fillStyle = FOLDER_PLATE;
+      ctx.fillStyle = folderPlate(accentRef.current);
       ctx.beginPath();
       for (const r of rects) {
         if (!plates.has(r.id)) continue;
@@ -407,14 +431,36 @@ export function Treemap({
         ctx.fill();
       }
 
-      const sprite = getHighlightSprite();
+      // A 1px bevel rather than a stretched gradient. The light and the shadow
+      // are the same colour on every block, so all the top edges go into one
+      // path and all the bottom edges into another — two fills for the whole
+      // map, where the sprite was one scaled drawImage per block. And being a
+      // fixed pixel size, neither edge stretches: the gradient this replaces
+      // was a 128×128 radial sprite drawn into every block's rect, which on a
+      // large or non-square block smeared into something between a bubble and
+      // a fingerprint.
+      const edge = BEVEL_MIN_PX * dpr;
+      ctx.fillStyle = BEVEL_LIGHT;
+      ctx.beginPath();
       for (const r of rects) {
         if (r.isDir && !plates.has(r.id)) continue;
         const s = snap(r, dpr, 1);
-        if (s.w > 3 && s.h > 3) ctx.drawImage(sprite, s.x, s.y, s.w, s.h);
+        if (s.w >= edge && s.h >= edge) ctx.rect(s.x, s.y, s.w, dpr);
       }
+      ctx.fill();
+      ctx.fillStyle = BEVEL_DARK;
+      ctx.beginPath();
+      for (const r of rects) {
+        if (r.isDir && !plates.has(r.id)) continue;
+        const s = snap(r, dpr, 1);
+        if (s.w >= edge && s.h >= edge)
+          ctx.rect(s.x, s.y + s.h - dpr, s.w, dpr);
+      }
+      ctx.fill();
 
-      if (labelsRef.current) drawLabels(ctx, rects, dpr);
+      if (withLabels && labelsRef.current) {
+        drawLabels(ctx, rects, dpr, folderPlate(accentRef.current));
+      }
 
       if (zoomRafRef.current === 0) blit();
     },
@@ -453,7 +499,7 @@ export function Treemap({
       // children go inside it) and closing puts the plate back, so it is
       // there either way, and it is the frame it always had.
       const target = about === null ? undefined : byIdRef.current.get(about);
-      if (!base || !off || off.width === 0 || !target) {
+      if (!base || !off || off.width === 0 || !target || reducedMotion()) {
         bake(to);
         return;
       }
@@ -473,7 +519,7 @@ export function Treemap({
       const start = performance.now();
       const ctx = base.getContext("2d")!;
       const step = () => {
-        const t = Math.min(1, (performance.now() - start) / MORPH_MS);
+        const t = Math.min(1, (performance.now() - start) / MOTION.open);
         const ease = 1 - (1 - t) * (1 - t);
         ctx.clearRect(0, 0, base.width, base.height);
         ctx.drawImage(was!, 0, 0);
@@ -514,6 +560,74 @@ export function Treemap({
     },
     [bake, blit, drawOverlay],
   );
+
+  /**
+   * The same map, refitted: a resize, a filter, another scan tick. Every block
+   * that was already there keeps its identity and slides to its new frame.
+   *
+   * Blocks that only exist in the new layout do *not* animate in — they appear
+   * where they belong. Growing a few hundred of them out of one rect stacks
+   * them all on the same spot, and stacked blocks are what turned this into a
+   * flashbulb the first time it was tried; the flare was never about the
+   * animation being absent.
+   *
+   * Hit testing follows the frames as drawn: `rectsRef` is what the map is
+   * showing, so a click during a refit lands on the block under the cursor
+   * rather than on where that block is going. That also means the next change
+   * reads its starting point off the current frame, which is what keeps two
+   * changes in a row from snapping back.
+   */
+  const moveTo = useCallback(
+    (from: TreemapRect[], to: TreemapRect[]) => {
+      const prev = new Map(from.map((r) => [r.id, r]));
+      const start = performance.now();
+      const step = () => {
+        const t = Math.min(1, (performance.now() - start) / MOTION.move);
+        const ease = easeOut(t);
+        const drawn = to.map((r) => {
+          const was = prev.get(r.id);
+          if (!was) return r;
+          return {
+            ...r,
+            x: was.x + (r.x - was.x) * ease,
+            y: was.y + (r.y - was.y) * ease,
+            w: was.w + (r.w - was.w) * ease,
+            h: was.h + (r.h - was.h) * ease,
+          };
+        });
+        rectsRef.current = drawn;
+        bake(drawn, false);
+        if (t < 1) {
+          moveRafRef.current = requestAnimationFrame(step);
+        } else {
+          moveRafRef.current = 0;
+          rectsRef.current = to;
+          bake();
+          drawOverlay();
+        }
+      };
+      moveRafRef.current = requestAnimationFrame(step);
+    },
+    [bake, drawOverlay],
+  );
+
+  /** Did anything move enough to be worth showing? */
+  function moved(a: TreemapRect[], b: TreemapRect[]): boolean {
+    const prev = new Map(a.map((r) => [r.id, r]));
+    for (const r of b) {
+      const was = prev.get(r.id);
+      if (!was) return true;
+      if (
+        Math.abs(was.x - r.x) > MOTION.moveMinPx ||
+        Math.abs(was.y - r.y) > MOTION.moveMinPx ||
+        Math.abs(was.w - r.w) > MOTION.moveMinPx ||
+        Math.abs(was.h - r.h) > MOTION.moveMinPx
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
 
   const refreshCrumbs = useCallback(() => {
     const generation = generationRef.current;
@@ -567,15 +681,22 @@ export function Treemap({
         morphRef.current = false;
         return;
       }
-      rectsRef.current = rects;
+      const was = rectsRef.current;
       byIdRef.current = new Map(rects.map((r) => [r.id, r]));
       platesRef.current = solidPlates(rects);
       setHasRects(rects.length > 0);
+      cancelAnimationFrame(moveRafRef.current);
+      moveRafRef.current = 0;
+      const animating = !reducedMotion() && was.length > 0;
       if (morphRef.current) {
-        // `morph` owns the freeze from here: it lifts it when the frames stop.
         morphRef.current = false;
+        rectsRef.current = rects;
+        // `morph` owns the freeze from here: it lifts it when the frames stop.
         morph(rects, aboutRef.current);
+      } else if (animating && moved(was, rects)) {
+        moveTo(was, rects);
       } else {
+        rectsRef.current = rects;
         hitFrozenRef.current = false;
         bake();
       }
@@ -599,7 +720,7 @@ export function Treemap({
       reportUnlessStale("loading treemap", e);
       if (seq === fetchSeqRef.current) hitFrozenRef.current = false;
     }
-  }, [bake, refreshCrumbs, onNavigate, morph]);
+  }, [bake, refreshCrumbs, onNavigate, morph, moveTo]);
 
   /**
    * What the last click did, for the double click to read. There is no timer
@@ -619,13 +740,40 @@ export function Treemap({
     setForceOpenId(id);
   }, []);
 
+  /**
+   * Change the view root, showing the move.
+   *
+   * The animation is a scale of the picture as it stands, and the rect it
+   * scales from is different going in and coming out: zooming into a folder
+   * scales *it* up to fill the pane, and zooming out scales *the folder being
+   * left* down into the place it holds in the layout we are moving to. That
+   * second rect only exists once the new layout is here — which is why the
+   * fetch comes first and the animation second, and why zooming out used to
+   * have no animation at all: it looked for the parent in the rects it had,
+   * the parent is not drawn in the layout being left, and it gave up.
+   *
+   * The picture frozen is the canvas as it stands rather than the last settled
+   * bake, so a second notch of the wheel continues from the frame on screen
+   * instead of snapping back to where the first one started.
+   */
   const drillTo = useCallback(
-    (id: number) => {
+    async (id: number) => {
       if (id === rootIdRef.current) return;
-      const zoomFrom = byIdRef.current.get(id);
+      const leaving = rootIdRef.current;
+      const into = byIdRef.current.get(id);
+      const base = baseRef.current;
+      let frozen: HTMLCanvasElement | null = null;
+      if (base && base.width > 0) {
+        frozen = document.createElement("canvas");
+        frozen.width = base.width;
+        frozen.height = base.height;
+        frozen.getContext("2d")!.drawImage(base, 0, 0);
+      }
       rootIdRef.current = id;
       cancelAnimationFrame(morphRafRef.current);
+      cancelAnimationFrame(zoomRafRef.current);
       morphRafRef.current = 0;
+      zoomRafRef.current = 0;
       morphRef.current = false;
       hitFrozenRef.current = true;
       setTooltip(null);
@@ -637,40 +785,52 @@ export function Treemap({
       setForceOpenId((open) => (open === id ? open : null));
       drawOverlay(); // clear rings: they describe the view being left
 
-      const base = baseRef.current;
+      await fetchLayout();
+      if (rootIdRef.current !== id) return;
+
+      const from = into ?? byIdRef.current.get(leaving);
       const off = offscreenRef.current;
-      if (zoomFrom && zoomFrom.isDir && base && off) {
+      if (from && from.isDir && frozen && off && !reducedMotion()) {
         const dpr = window.devicePixelRatio || 1;
-        const target = snap(zoomFrom, dpr, 0);
-        const frozen = document.createElement("canvas");
-        frozen.width = off.width;
-        frozen.height = off.height;
-        frozen.getContext("2d")!.drawImage(off, 0, 0);
+        const target = snap(from, dpr, 0);
         const start = performance.now();
-        const ctx = base.getContext("2d")!;
+        const ctx = base!.getContext("2d")!;
         const step = () => {
-          const t = Math.min(1, (performance.now() - start) / ZOOM_MS);
-          const ease = 1 - (1 - t) * (1 - t);
+          const t = Math.min(1, (performance.now() - start) / MOTION.zoom);
+          const ease = easeOut(t);
           const sx = target.x * ease;
           const sy = target.y * ease;
-          const sw = frozen.width + (target.w - frozen.width) * ease;
-          const sh = frozen.height + (target.h - frozen.height) * ease;
-          ctx.clearRect(0, 0, base.width, base.height);
-          ctx.drawImage(frozen, sx, sy, sw, sh, 0, 0, base.width, base.height);
+          const sw = frozen!.width + (target.w - frozen!.width) * ease;
+          const sh = frozen!.height + (target.h - frozen!.height) * ease;
+          ctx.clearRect(0, 0, base!.width, base!.height);
+          ctx.drawImage(
+            frozen!,
+            sx,
+            sy,
+            sw,
+            sh,
+            0,
+            0,
+            base!.width,
+            base!.height,
+          );
           if (t < 1) {
             zoomRafRef.current = requestAnimationFrame(step);
           } else {
             zoomRafRef.current = 0;
             blit();
+            hitFrozenRef.current = false;
+            drawOverlay();
           }
         };
-        cancelAnimationFrame(zoomRafRef.current);
         zoomRafRef.current = requestAnimationFrame(step);
+      } else {
+        bake();
+        hitFrozenRef.current = false;
+        drawOverlay();
       }
-
-      void fetchLayout();
     },
-    [blit, drawOverlay, fetchLayout],
+    [bake, blit, drawOverlay, fetchLayout],
   );
 
   useEffect(() => {
@@ -812,28 +972,32 @@ export function Treemap({
     [],
   );
 
-  const regionAt = useCallback(
+  /**
+   * The folder under a point: the deepest directory rect containing it, at any
+   * depth. `hitTest` alone will not do — it answers with whatever is smallest
+   * there, which is usually a file — so this walks the list for the deepest
+   * *directory* instead.
+   */
+  const dirAt = useCallback(
     (cssX: number, cssY: number): TreemapRect | null => {
       if (hitFrozenRef.current) return null;
+      let best: TreemapRect | null = null;
       for (const r of rectsRef.current) {
+        if (!r.isDir) continue;
         if (
-          r.depth === 1 &&
-          r.isDir &&
-          cssX >= r.x &&
-          cssX < r.x + r.w &&
-          cssY >= r.y &&
-          cssY < r.y + r.h
+          cssX < r.x ||
+          cssX >= r.x + r.w ||
+          cssY < r.y ||
+          cssY >= r.y + r.h
         ) {
-          return r;
+          continue;
         }
+        if (!best || r.depth > best.depth) best = r;
       }
-      return null;
+      return best;
     },
     [],
   );
-
-  // Also called at mount: the div appears after the debounce with the cursor
-  // already at rest, and would otherwise render at (0,0).
   const placeTooltip = useCallback(() => {
     const container = containerRef.current;
     const tip = tooltipRef.current;
@@ -940,11 +1104,11 @@ export function Treemap({
       const hit = hitTest(cssX, cssY);
       if (!hit) return;
       onContext(hit.id, e.clientX, e.clientY, {
-        inId: regionAt(cssX, cssY)?.id ?? null,
+        inId: dirAt(cssX, cssY)?.id ?? null,
         outId: crumbs.length >= 2 ? crumbs[crumbs.length - 2].id : null,
       });
     },
-    [hitTest, regionAt, crumbs, onContext],
+    [hitTest, dirAt, crumbs, onContext],
   );
 
   const handleDoubleClick = useCallback(() => {
@@ -970,10 +1134,10 @@ export function Treemap({
         return;
       }
       const bounds = containerRef.current!.getBoundingClientRect();
-      const region = regionAt(e.clientX - bounds.left, e.clientY - bounds.top);
+      const region = dirAt(e.clientX - bounds.left, e.clientY - bounds.top);
       if (region) onNavigate(region.id);
     },
-    [zoomOut, regionAt, onNavigate],
+    [zoomOut, dirAt, onNavigate],
   );
 
   useEffect(() => {

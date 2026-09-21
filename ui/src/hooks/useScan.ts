@@ -60,7 +60,9 @@ export function useScan(): ScanController {
   const [expanded, setExpanded] = useState<Set<number>>(new Set([0]));
   const [sort, setSort] = useState<Sort>({ key: "size", desc: true });
   const [hideSystem, setHideSystem] = useState(true);
-  const [showLabels, setShowLabels] = useState(false);
+  // On by default: the map is a picture of where the space went, and a name on
+  // the blocks that can hold one is how you read it without hovering.
+  const [showLabels, setShowLabels] = useState(true);
   const [depth, setDepthState] = useState<DepthPref>(loadTreemapDepth);
 
   const setDepth = useCallback((next: DepthPref) => {

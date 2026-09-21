@@ -1,43 +1,57 @@
+import type { AccentName } from "./theme";
+
 /**
- * The colour of a folder block. The one category colour that is not a file
- * type: a folder is a container, and a plate painted in the app's own
- * background grey made an unopened folder look like nothing was there at all.
- * Its hue is not any file colour's, so a container is never mistaken for what
- * it holds.
+ * The colour of a folder block, per accent — and this is the map's *tone*.
  *
- * Picked for being a *large* area rather than a small one — folders cover more
- * of the map than anything else, so this is the map's tone. It sits clearly
- * above the backdrop in value, which is what makes a block read as raised
- * instead of as a slightly different patch of background.
- *
- * It is a colour and nothing else — folders are drawn exactly like files.
+ * Folders cover more of the map than anything else, so the folder colour is
+ * the thing to get right first; the file colours are what sits on top of it.
+ * They all sit at one Morandi lightness (OKLab 0.525) with one dusting of
+ * chroma (0.038), so switching accent changes the hue and nothing else about
+ * the map's weight — and the ACCENT control in settings, which already sets
+ * the window's accent, now sets this too, because "a colour scheme" is one
+ * choice and not two.
  */
-export const FOLDER_PLATE = "#4d5a86";
+export const FOLDER_PLATES: Record<AccentName, string> = {
+  teal: "#507271",
+  blue: "#5c6c80",
+  violet: "#6d667d",
+  rose: "#7f625f",
+  green: "#5d705d",
+};
+
+/** The folder colour a scheme paints with. */
+export function folderPlate(accent: AccentName): string {
+  return FOLDER_PLATES[accent] ?? FOLDER_PLATES.teal;
+}
+
+/** The highlight and shadow of a block's 1px bevel. */
+export const BEVEL_LIGHT = "rgba(255, 255, 255, 0.10)";
+export const BEVEL_DARK = "rgba(0, 0, 0, 0.22)";
 
 // Indexed by mathom-core's `Category as u8`.
 //
-// One lightness, one personality. The categories came from Tailwind's 500s,
-// which are chosen to be *distinguishable*, not to sit together: yellow and
-// lime read as much lighter than blue and slate, so on a dark canvas two
-// classes shout and two recede, and the map looks like ten people each picked
-// a colour. These are the same hues at a single OKLab lightness (0.700) with
-// the chroma capped, which puts every class within a few percent of the same
-// WCAG luminance — no category is louder than another, and the map reads as
-// one palette. The two greys stay grey rather than being pulled up to the same
-// chroma as the rest; a neutral that is forced to have a hue lands on top of a
-// class that already owns it.
+// Morandi: one palette for every scheme, because a category should be the same
+// colour whichever accent is chosen — otherwise switching accent moves the
+// green you had learned. Eight hues spread round the wheel at one lightness
+// (OKLab 0.735) and one dusting of chroma (0.070, where Tailwind's 500s run to
+// 0.23). The two neutrals stay neutral: forcing a grey up to that chroma lands
+// it on a hue some class already owns.
+//
+// The chroma is low enough that neighbouring hues are hard to tell apart —
+// that is what Morandi is. Size and position carry most of the map's meaning,
+// the tooltip and the labels carry the rest, and the labels are on by default.
 export const PALETTE: readonly string[] = [
-  FOLDER_PLATE, // 0 directory
-  "#b286e7", // 1 video
-  "#52b76b", // 2 audio
-  "#c5970e", // 3 image
-  "#e67f47", // 4 archive
-  "#679ef8", // 5 document
-  "#0fb1ce", // 6 code
-  "#e275a4", // 7 executable
-  "#8fa0b8", // 8 system
-  "#7eb048", // 9 data
-  "#9d9da7", // 10 other
+  FOLDER_PLATES.teal, // 0 directory (the scheme overrides this)
+  "#c09ac2", // 1 video — mauve
+  "#8ab692", // 2 audio — sage
+  "#bea676", // 3 image — ochre
+  "#d09b88", // 4 archive — terracotta
+  "#89add5", // 5 document — dusty blue
+  "#72b7b7", // 6 code — dusty teal
+  "#d097a3", // 7 executable — dusty rose
+  "#a5a9b5", // 8 system — grey
+  "#a7af7c", // 9 data — olive
+  "#a7a9b0", // 10 other — grey
 ];
 
 /** Canvas colors resolved from the active theme's CSS variables. */
