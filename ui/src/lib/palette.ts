@@ -40,17 +40,19 @@ export function folderPlate(accent: AccentName): string {
  * way round a printed map is drawn — the folder is the surface you are looking
  * at, the file is the ink on it.
  *
- * That the two are 0.13 apart in OKLab lightness matters more than it sounds:
- * the level ramp spans 0.09, so at no depth does the deepest file reach the
- * shallowest folder. Two runs any closer would meet in the middle of the ramp
- * and a deep file would read as a shallow folder.
+ * The two are close in lightness — 0.05 apart, and the ramp spans 0.09, so
+ * their runs do overlap. That is fine, and it is the whole point of spending
+ * two hues on this: folder and file are told apart by hue, which no amount of
+ * depth can change, so the lightness axis is free to mean depth alone. A pair
+ * sharing one hue would have had to keep the two runs apart instead, which is
+ * what made the earlier versions either muddy or heavy.
  */
 export interface Scheme {
   folder: string;
   file: string;
 }
 
-export const CLASSIC: Scheme = { folder: "#dea181", file: "#6c8cb3" };
+export const CLASSIC: Scheme = { folder: "#ebbc8d", file: "#8dbceb" };
 
 /**
  * Level contrast: the same colour, a step darker for each level of nesting.

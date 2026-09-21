@@ -346,12 +346,24 @@ pub fn get_path(state: State<'_, AppState>, generation: u64, id: NodeId) -> Resu
 /// something has to. Mirrored as `MAX_TREEMAP_DEPTH` in `ui/src/lib/prefs.ts`.
 const MAX_TREEMAP_DEPTH: u8 = 24;
 
-/// Legibility floor for a treemap rect, in CSS pixels. A child whose share of
-/// its directory falls under this is drawn at this size anyway — a directory
-/// has to tile edge to edge, or the small stuff reads as a hole rather than as
-/// small stuff. What no longer fits at this size is dropped smallest first, so
-/// the map still never turns into a mosaic of specks.
-const TREEMAP_MIN_SIDE_PX: f32 = 6.0;
+/// Legibility floor for a treemap rect, in CSS pixels — sized to the label.
+///
+/// A block only pays for itself if it can say what it is, and the shortest
+/// thing it can say is three characters and the padding around them, which is
+/// about 28px wide and 14px tall at the UI's label size. Blocks that cannot
+/// reach that are not blocks; they are dots and slivers, and a map of them is
+/// a texture rather than a map. So the floor is raised until the layout stops
+/// producing them.
+///
+/// It stays a floor rather than a cut-off: a child whose share of its
+/// directory falls under this is drawn at this size anyway, so a directory
+/// tiles edge to edge and the small stuff reads as small stuff rather than as
+/// a hole. What still does not fit is dropped — smallest first — and the
+/// survivors re-normalize into the space, so dropping leaves no hole either.
+///
+/// The UI draws a name in every block at or above this size, and marks the few
+/// that come out thinner than it as part of the folder behind them.
+const TREEMAP_MIN_SIDE_PX: f32 = 28.0;
 
 // The argument list mirrors the UI's query; grouping it into a struct would
 // only move the same list one level down.

@@ -74,17 +74,17 @@ function reducedMotion(): boolean {
 const LABEL_FONT = 'ui-sans-serif, system-ui, "Segoe UI", sans-serif';
 const LABEL_SIZE_PX = 11;
 /**
- * Only blocks with room to say something useful get a name. These are what
- * "useful" costs: narrower and the name is cut down to two letters, shorter
- * and the size has nowhere to go but over the edge. Deliberately generous —
- * the point of the mode is the handful of blocks that dominate the map, and
- * a wall of captions reads as noise.
+ * The smallest block that can say anything: three characters and the padding
+ * around them at the label size. Every block the map draws is at least this
+ * big — the layout is asked for blocks this big — so *every* block gets a
+ * name. Anything that comes out smaller anyway is not drawn at all; see
+ * `Block.behind`.
  */
-const LABEL_MIN_W_PX = 46;
+const LABEL_MIN_W_PX = 28;
 /** Taller than this and the size gets a line of its own under the name. */
-const LABEL_TWO_LINE_H_PX = 30;
-/** …and shorter than this and it is not worth writing at all. */
-const LABEL_MIN_H_PX = 18;
+const LABEL_TWO_LINE_H_PX = 40;
+/** …and shorter than this and the name has nowhere to sit. */
+const LABEL_MIN_H_PX = 14;
 const LABEL_PAD_PX = 4;
 
 /**
@@ -125,7 +125,7 @@ function fitText(
  */
 function drawLabels(
   ctx: CanvasRenderingContext2D,
-  rects: TreemapRect[],
+  rects: Block[],
   dpr: number,
   colors: BlockColors,
 ) {
@@ -140,6 +140,7 @@ function drawLabels(
     const r = rects[i];
     // Rects come out parents before children, so a parent's first child is the
     // very next entry: a deeper neighbour means the layout subdivided this one.
+    if (r.behind) continue;
     if ((rects[i + 1]?.depth ?? 0) > r.depth) continue;
     const s = snap(r, dpr, 1);
     if (s.w < minW || s.h < LABEL_MIN_H_PX * dpr) continue;
@@ -147,9 +148,17 @@ function drawLabels(
     const name = fitText(ctx, r.name, s.w - 2 * pad);
     if (!name) continue;
     const cx = s.x + s.w / 2;
-    if (s.h >= LABEL_TWO_LINE_H_PX * dpr) {
+    // The size is fitted too, and dropped if it will not fit: a block this
+    // small is narrow enough that an unfitted "3.00 MB" runs straight over
+    // the block next to it, and a number bleeding across a boundary is worse
+    // than no number.
+    const size =
+      s.h >= LABEL_TWO_LINE_H_PX * dpr
+        ? fitText(ctx, formatBytes(r.size), s.w - 2 * pad)
+        : "";
+    if (size) {
       ctx.fillText(name, cx, s.y + s.h / 2 - 6 * dpr);
-      ctx.fillText(formatBytes(r.size), cx, s.y + s.h / 2 + 8 * dpr);
+      ctx.fillText(size, cx, s.y + s.h / 2 + 8 * dpr);
     } else {
       ctx.fillText(name, cx, s.y + s.h / 2);
     }
@@ -242,25 +251,44 @@ function scaleAbout(
 }
 
 /**
- * Slivers: blocks that are a line rather than a rectangle. A squarified layout
- * still leaves them — a remainder along an edge that had nowhere else to go
- * comes out as, say, 10px by 600 — and they are worth less than the space they
- * take: they cannot hold a name, they read as a fringe along the map's edge
- * rather than as blocks, and hovering one draws a ring around something that
- * is not visibly there. Dropped when the layout arrives, so the paint, the hit
- * test, the labels and the open/close diff all agree about what the map is.
+ * A rect as the map draws it: the layout's geometry, plus whatever the view
+ * decided about it. `behind` marks a block that came out too small to say
+ * anything — under three characters wide, or too short for a line of text.
+ * Those are the sizes the layout is asked to avoid, and it cannot always
+ * manage: a remainder along an edge only has the space it has.
  *
- * Both numbers matter: a 12px strip is fine if it is short, and a long block is
- * fine if it is thick. It takes both being wrong to make one of these.
+ * Such a block is not a block. It cannot hold a name, and hovering it would
+ * draw a ring around something that is not visibly there. It is not dropped
+ * either — dropping leaves a hole, and a hole is worse than the speck it
+ * replaced. It is painted in the colour of the folder it sits in, which is
+ * what a folder plate already means: space that belongs to something you are
+ * not being shown.
  */
-const SLIVER_MAX_SIDE_PX = 10;
-const SLIVER_ASPECT = 4;
+interface Block extends TreemapRect {
+  behind?: TreemapRect;
+}
 
-function isSliver(r: TreemapRect): boolean {
-  const short = Math.min(r.w, r.h);
-  return (
-    short < SLIVER_MAX_SIDE_PX && Math.max(r.w, r.h) > short * SLIVER_ASPECT
-  );
+function tooSmallToBeABlock(r: TreemapRect, dpr: number): boolean {
+  return r.w * dpr < LABEL_MIN_W_PX * dpr || r.h * dpr < LABEL_MIN_H_PX * dpr;
+}
+
+/**
+ * Mark every block that cannot hold its own name with the folder it belongs
+ * in. Parents come before children, so a rect's folder is the nearest earlier
+ * rect of a smaller depth — a stack, popped as the depths climb back up.
+ */
+function markBehinds(rects: TreemapRect[], dpr: number): Block[] {
+  const stack: TreemapRect[] = [];
+  return rects.map((r) => {
+    while (stack.length > 0 && stack[stack.length - 1].depth >= r.depth) {
+      stack.pop();
+    }
+    const parent = stack[stack.length - 1];
+    stack.push(r);
+    return !parent || !tooSmallToBeABlock(r, dpr)
+      ? r
+      : { ...r, behind: parent };
+  });
 }
 
 /** Rects with no children of their own — the ones a click can open. */
@@ -381,8 +409,8 @@ export function Treemap({
   const overlayRef = useRef<HTMLCanvasElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
 
-  const rectsRef = useRef<TreemapRect[]>([]);
-  const byIdRef = useRef<Map<number, TreemapRect>>(new Map());
+  const rectsRef = useRef<Block[]>([]);
+  const byIdRef = useRef<Map<number, Block>>(new Map());
   const offscreenRef = useRef<HTMLCanvasElement | null>(null);
   const rootIdRef = useRef(0);
   // During drill, old rects are stale geometry.
@@ -530,7 +558,7 @@ export function Treemap({
    * this map is imitating does with its own labels.
    */
   const paintLabels = useCallback(
-    (rects: TreemapRect[]) => {
+    (rects: Block[]) => {
       const label = labelRef.current;
       if (!label || label.width === 0) return;
       const ctx = label.getContext("2d")!;
@@ -558,7 +586,7 @@ export function Treemap({
    * zoom.
    */
   const render = useCallback(
-    (drawn: TreemapRect[] = rectsRef.current, withLabels = true) => {
+    (drawn: Block[] = rectsRef.current, withLabels = true) => {
       const base = baseRef.current;
       if (!base || base.width === 0) return;
       let off = offscreenRef.current;
@@ -593,10 +621,12 @@ export function Treemap({
       // level ramp means two folders can be two shades of it. Grouping by the
       // colour itself keeps this loop and the one fill per group the same in
       // every mode, and the blocks do not overlap, so the order is free.
-      const buckets = new Map<string, TreemapRect[]>();
+      const buckets = new Map<string, Block[]>();
       for (const r of rects) {
-        if (r.isDir && !plates.has(r.id)) continue; // subdivided: covered by its children
-        const colour = blockColor(colors, r.isDir, r.category, r.depth);
+        if (!r.behind && r.isDir && !plates.has(r.id)) continue; // covered by its children
+        const colour = r.behind
+          ? blockColor(colors, true, r.behind.category, r.behind.depth)
+          : blockColor(colors, r.isDir, r.category, r.depth);
         const bucket = buckets.get(colour);
         if (bucket) bucket.push(r);
         else buckets.set(colour, [r]);
@@ -617,7 +647,7 @@ export function Treemap({
   );
 
   const bake = useCallback(
-    (drawn: TreemapRect[] = rectsRef.current, withLabels = true) => {
+    (drawn: Block[] = rectsRef.current, withLabels = true) => {
       render(drawn, withLabels);
       // A zoom or a recolour in flight is drawing its own frames onto the same
       // canvas, and this would land on top of one of them.
@@ -726,7 +756,7 @@ export function Treemap({
    * to become.
    */
   const morph = useCallback(
-    (to: TreemapRect[], opens: number[], closes: number[]) => {
+    (to: Block[], opens: number[], closes: number[]) => {
       const base = baseRef.current;
       const off = offscreenRef.current;
       const dpr = window.devicePixelRatio || 1;
@@ -812,7 +842,7 @@ export function Treemap({
    * changes in a row from snapping back.
    */
   const moveTo = useCallback(
-    (from: TreemapRect[], to: TreemapRect[]) => {
+    (from: Block[], to: Block[]) => {
       const prev = new Map(from.map((r) => [r.id, r]));
       const start = performance.now();
       const step = () => {
@@ -850,7 +880,7 @@ export function Treemap({
   );
 
   /** Did anything move enough to be worth showing? */
-  function moved(a: TreemapRect[], b: TreemapRect[]): boolean {
+  function moved(a: Block[], b: Block[]): boolean {
     const prev = new Map(a.map((r) => [r.id, r]));
     for (const r of b) {
       const was = prev.get(r.id);
@@ -905,7 +935,7 @@ export function Treemap({
     const forRoot = rootIdRef.current;
     lastFetchRef.current = performance.now();
     try {
-      const rects = (
+      const rects = markBehinds(
         await api.getTreemap(
           generation,
           forRoot,
@@ -915,8 +945,9 @@ export function Treemap({
           filterRef.current,
           forceOpenRef.current,
           maxDepthRef.current,
-        )
-      ).filter((r) => !isSliver(r));
+        ),
+        window.devicePixelRatio || 1,
+      );
       if (seq !== fetchSeqRef.current || forRoot !== rootIdRef.current) {
         morphRef.current = false;
         return;
@@ -1287,25 +1318,18 @@ export function Treemap({
     };
   }, [blit, fetchLayout]);
 
-  const hitTest = useCallback(
-    (cssX: number, cssY: number): TreemapRect | null => {
-      if (hitFrozenRef.current) return null;
-      const rects = rectsRef.current;
-      for (let i = rects.length - 1; i >= 0; i--) {
-        const r = rects[i];
-        if (
-          cssX >= r.x &&
-          cssX < r.x + r.w &&
-          cssY >= r.y &&
-          cssY < r.y + r.h
-        ) {
-          return r;
-        }
+  const hitTest = useCallback((cssX: number, cssY: number): Block | null => {
+    if (hitFrozenRef.current) return null;
+    const rects = rectsRef.current;
+    for (let i = rects.length - 1; i >= 0; i--) {
+      const r = rects[i];
+      if (r.behind) continue; // not drawn, so not there to hit
+      if (cssX >= r.x && cssX < r.x + r.w && cssY >= r.y && cssY < r.y + r.h) {
+        return r;
       }
-      return null;
-    },
-    [],
-  );
+    }
+    return null;
+  }, []);
 
   /**
    * The folder under a point: the deepest directory rect containing it, at any
@@ -1318,25 +1342,17 @@ export function Treemap({
    * asking the wheel for another notch is not — it is one gesture, and the
    * next notch should carry on from where this one has got to.
    */
-  const dirAt = useCallback(
-    (cssX: number, cssY: number): TreemapRect | null => {
-      let best: TreemapRect | null = null;
-      for (const r of rectsRef.current) {
-        if (!r.isDir) continue;
-        if (
-          cssX < r.x ||
-          cssX >= r.x + r.w ||
-          cssY < r.y ||
-          cssY >= r.y + r.h
-        ) {
-          continue;
-        }
-        if (!best || r.depth > best.depth) best = r;
+  const dirAt = useCallback((cssX: number, cssY: number): Block | null => {
+    let best: Block | null = null;
+    for (const r of rectsRef.current) {
+      if (!r.isDir || r.behind) continue;
+      if (cssX < r.x || cssX >= r.x + r.w || cssY < r.y || cssY >= r.y + r.h) {
+        continue;
       }
-      return best;
-    },
-    [],
-  );
+      if (!best || r.depth > best.depth) best = r;
+    }
+    return best;
+  }, []);
   const placeTooltip = useCallback(() => {
     const container = containerRef.current;
     const tip = tooltipRef.current;
