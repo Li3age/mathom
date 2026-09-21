@@ -272,9 +272,13 @@ fn file_name(attr: &[u8], arena: &mut String, facts: &mut RecordFacts) -> Result
     // placement is deterministic (disk order).
     if facts.name.is_none_or(|n| rank < n.rank) {
         let off = arena.len() as u32;
+        // The bounds check above leaves an exact number of pairs, so
+        // `as_chunks` has no remainder to drop.
         let units = v[0x42..0x42 + 2 * chars]
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]));
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| u16::from_le_bytes(*c));
         for r in char::decode_utf16(units) {
             arena.push(r.unwrap_or(char::REPLACEMENT_CHARACTER));
         }
