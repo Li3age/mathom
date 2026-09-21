@@ -6,6 +6,8 @@
 
 这是 [mathom](https://github.com/gitRasheed/mathom) 的一个个人分支。扫描后端（MFT 读取、目录遍历）是上游原样；**地图从布局到绘制整个重做了**：文件夹一个色系、文件一个色系，靠明度深浅读出嵌套层级。
 
+![mathom-SpaceSniffer-Style 扫完一块盘：左边是文件夹树，右边是矩形树图](docs/screenshot.png)
+
 ---
 
 ## 地图
