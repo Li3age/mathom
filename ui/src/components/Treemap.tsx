@@ -30,6 +30,7 @@ import { formatBytes, formatPercent } from "../lib/format";
 import {
   GLOSS_LIGHT,
   type BlockColors,
+  blockColor,
   blockColors,
   canvasColors,
   textOn,
@@ -143,11 +144,7 @@ function drawLabels(
     if ((rects[i + 1]?.depth ?? 0) > r.depth) continue;
     const s = snap(r, dpr, 1);
     if (s.w < minW || s.h < LABEL_MIN_H_PX * dpr) continue;
-    ctx.fillStyle = textOn(
-      r.isDir
-        ? colors.folder
-        : (colors.byCategory[r.category] ?? colors.byCategory[10]),
-    );
+    ctx.fillStyle = textOn(blockColor(colors, r.isDir, r.category, r.depth));
     const name = fitText(ctx, r.name, s.w - 2 * pad);
     if (!name) continue;
     const cx = s.x + s.w / 2;
@@ -580,23 +577,21 @@ export function Treemap({
       // files should look like.
       const colors = colorsNow();
       const plates = solidPlates(rects);
-      ctx.fillStyle = colors.folder;
-      ctx.beginPath();
+      // Bucketed by the colour each block actually wears, rather than by
+      // category: the colour mode decides what a block's colour is, and the
+      // level ramp means two folders can be two shades of it. Grouping by the
+      // colour itself keeps this loop and the one fill per group the same in
+      // every mode, and the blocks do not overlap, so the order is free.
+      const buckets = new Map<string, TreemapRect[]>();
       for (const r of rects) {
-        if (!plates.has(r.id)) continue;
-        const s = snap(r, dpr, 1);
-        if (s.w > 0 && s.h > 0) ctx.rect(s.x, s.y, s.w, s.h);
+        if (r.isDir && !plates.has(r.id)) continue; // subdivided: covered by its children
+        const colour = blockColor(colors, r.isDir, r.category, r.depth);
+        const bucket = buckets.get(colour);
+        if (bucket) bucket.push(r);
+        else buckets.set(colour, [r]);
       }
-      ctx.fill();
-
-      const buckets: TreemapRect[][] = colors.byCategory.map(() => []);
-      for (const r of rects) {
-        if (!r.isDir) buckets[r.category]?.push(r);
-      }
-      for (let c = 0; c < buckets.length; c++) {
-        const bucket = buckets[c];
-        if (bucket.length === 0) continue;
-        ctx.fillStyle = colors.byCategory[c];
+      for (const [colour, bucket] of buckets) {
+        ctx.fillStyle = colour;
         ctx.beginPath();
         for (const r of bucket) {
           const s = snap(r, dpr, 1);

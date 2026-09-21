@@ -41,8 +41,15 @@ export function loadAccent(): AccentName {
   return v !== null && v in ACCENTS ? (v as AccentName) : "teal";
 }
 
+/**
+ * Classic by default, which is also what the map this is modelled on opens
+ * with: files in one colour and folders in another, with the accent carrying
+ * the tone. Multi is there for reading the *shape* of a disk by file type —
+ * a real question, and the reason it exists — but it is the second answer,
+ * not the first impression.
+ */
 export function loadColorMode(): ColorMode {
-  return localStorage.getItem(MODE_KEY) === "classic" ? "classic" : "multi";
+  return localStorage.getItem(MODE_KEY) === "multi" ? "multi" : "classic";
 }
 
 export function saveThemeSettings(

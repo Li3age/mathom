@@ -74,29 +74,106 @@ export const CLASSIC: Record<AccentName, { dark: Scheme; light: Scheme }> = {
   },
 };
 
-/** One colour per `Category`, folder included at index 0. */
-export interface BlockColors {
-  folder: string;
-  byCategory: readonly string[];
+/**
+ * Level contrast: the same colour, a step darker for each level of nesting.
+ *
+ * This is what makes a two-colour map read as a *structure* rather than as a
+ * flat mosaic, and it is the half of SpaceSniffer's default view we were
+ * missing — its manual: "Those are the base colors, but they will be darkened
+ * to show nesting according to the Level Contrast parameter." Without it, a
+ * folder holding three hundred files is three hundred identical rectangles
+ * and there is nothing in the map to say how deep in you are.
+ *
+ * Both colours move by the same amount, so the gap between a folder and a file
+ * is exactly the same at every level and the two never read as each other. It
+ * saturates: past the third level everything is one shade, because the small
+ * blocks at the bottom are where a map is busiest and a ramp that kept going
+ * would turn that corner into a gradient rather than a set of blocks.
+ */
+const LEVEL_STEP = 0.03;
+const LEVEL_MAX = 3;
+
+/** A hex colour with its OKLab lightness shifted by `dl`, in place. */
+function shiftLightness(hex: string, dl: number): string {
+  const [r, g, b] = rgb(hex);
+  const lin = (c: number) => {
+    const s = c / 255;
+    return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  };
+  const [lr, lg, lb] = [lin(r), lin(g), lin(b)];
+  const l = Math.cbrt(
+    0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb,
+  );
+  const m = Math.cbrt(
+    0.2119034982 * lr + 0.6806995451 * lg + 0.1073969566 * lb,
+  );
+  const s = Math.cbrt(
+    0.0883024619 * lr + 0.2817188376 * lg + 0.6299787005 * lb,
+  );
+  // OKLab, then back with L moved. Clamped so a step off the end of the range
+  // saturates against it instead of wrapping round.
+  const L = Math.min(
+    1,
+    Math.max(0, 0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s + dl),
+  );
+  const A = 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s;
+  const B = 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s;
+  const l3 = (L + 0.3963377774 * A + 0.2158037573 * B) ** 3;
+  const m3 = (L - 0.1055613458 * A - 0.0638541728 * B) ** 3;
+  const s3 = (L - 0.0894841775 * A - 1.291485548 * B) ** 3;
+  const enc = (c: number) => {
+    const v = Math.max(0, Math.min(1, c));
+    const out = v <= 0.0031308 ? 12.92 * v : 1.055 * v ** (1 / 2.4) - 0.055;
+    return Math.round(out * 255);
+  };
+  const to = (v: number) => v.toString(16).padStart(2, "0");
+  return `#${to(enc(4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3))}${to(
+    enc(-1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3),
+  )}${to(enc(-0.0041960863 * l3 - 0.7034186147 * m3 + 1.707614701 * s3))}`;
 }
 
-/** The classic scheme's file colour repeated for every category, cached. */
-const flatCache = new Map<string, readonly string[]>();
+/** One base colour as a ramp: the colour itself, then a step per level. */
+const ramps = new Map<string, readonly string[]>();
 
-function flat(file: string): readonly string[] {
-  let row = flatCache.get(file);
+function ramp(base: string): readonly string[] {
+  let row = ramps.get(base);
   if (!row) {
-    row = PALETTE.map(() => file);
-    flatCache.set(file, row);
+    // Level 0 is the colour itself, not a round trip through OKLab and back:
+    // the schemes are chosen values and a step of nothing should return them
+    // unchanged, to the last bit.
+    row = [
+      base,
+      ...Array.from({ length: LEVEL_MAX }, (_, i) =>
+        shiftLightness(base, -LEVEL_STEP * (i + 1)),
+      ),
+    ];
+    ramps.set(base, row);
   }
   return row;
 }
 
 /**
+ * The shade a block at `depth` wears. Depth is measured from the view root, so
+ * a file sitting directly in the folder being looked at is depth 1 and wears
+ * the colour as designed; each level further in is a step darker. Ramps
+ * saturate, so this never misses.
+ */
+export function atDepth(colourRamp: readonly string[], depth: number): string {
+  return colourRamp[Math.min(Math.max(depth - 1, 0), colourRamp.length - 1)];
+}
+
+/** The colours of the map: folders and files, each a ramp by level. */
+export interface BlockColors {
+  folder: readonly string[];
+  /** Indexed by `Category`; `PALETTE`'s index 0 is the folder slot. */
+  byCategory: readonly (readonly string[])[];
+}
+
+/**
  * What the map paints with, for the mode, accent and theme in force. Classic
- * deliberately returns the same shape as multi — one colour per category —
- * with every category holding the same value, so the painting code does not
- * need to know which mode it is in.
+ * deliberately returns the same shape as multi — one ramp per category — with
+ * every category holding the same colour, so the painting code does not need
+ * to know which mode it is in.
  */
 export function blockColors(
   mode: ColorMode,
@@ -105,12 +182,30 @@ export function blockColors(
 ): BlockColors {
   if (mode === "classic") {
     const scheme = CLASSIC[accent]?.[theme] ?? CLASSIC.teal.dark;
+    const files = ramp(scheme.file);
     return {
-      folder: scheme.folder,
-      byCategory: flat(scheme.file),
+      folder: ramp(scheme.folder),
+      // Every category wears the same ramp — that is what "classic" means.
+      byCategory: PALETTE.map(() => files),
     };
   }
-  return { folder: folderPlate(accent), byCategory: PALETTE };
+  return {
+    folder: ramp(folderPlate(accent)),
+    byCategory: PALETTE.map((c) => ramp(c)),
+  };
+}
+
+/** The colour one block wears, for the mode/accent/theme in force. */
+export function blockColor(
+  colors: BlockColors,
+  isDir: boolean,
+  category: number,
+  depth: number,
+): string {
+  const ramp = isDir
+    ? colors.folder
+    : (colors.byCategory[category] ?? colors.byCategory[10]);
+  return atDepth(ramp, depth);
 }
 
 /**
