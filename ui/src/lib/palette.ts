@@ -208,14 +208,6 @@ export function blockColor(
   return atDepth(ramp, depth);
 }
 
-/**
- * The light that falls on the top of a block. One value, drawn as a short
- * fade down from the top edge — a surface catching the light, the way every
- * raised panel in the OS this imitates does it. It replaced a 1px bevel: two
- * hairlines read as a technical drawing, one soft edge reads as a solid.
- */
-export const GLOSS_LIGHT = "rgba(255, 255, 255, 0.10)";
-
 // Indexed by mathom-core's `Category as u8`.
 //
 // Morandi: one palette for every scheme, because a category should be the same

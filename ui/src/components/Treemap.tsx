@@ -28,7 +28,6 @@ import { EASE } from "../lib/ease";
 import { isStale, reportUnlessStale } from "../lib/errors";
 import { formatBytes, formatPercent } from "../lib/format";
 import {
-  GLOSS_LIGHT,
   type BlockColors,
   blockColor,
   blockColors,
@@ -156,14 +155,6 @@ function drawLabels(
     }
   }
 }
-
-/**
- * The light on the top of a block: a fade from the top edge, at most this
- * tall. Only blocks with a short side this big get one — on a 6px block the
- * light is the whole block.
- */
-const GLOSS_MIN_PX = 12;
-const GLOSS_SPAN_PX = 18;
 
 interface Snapped {
   x: number;
@@ -559,8 +550,6 @@ export function Treemap({
       const dpr = window.devicePixelRatio || 1;
       const rects = drawn;
       const theme = canvasColors();
-      const minSide = GLOSS_MIN_PX * dpr;
-      const span = GLOSS_SPAN_PX * dpr;
 
       // The map's own surface, behind every block: a folder that subdivided is
       // only the backdrop for what it contains, so it is not painted at all —
@@ -597,37 +586,6 @@ export function Treemap({
           const s = snap(r, dpr, 1);
           if (s.w > 0 && s.h > 0) ctx.rect(s.x, s.y, s.w, s.h);
         }
-        ctx.fill();
-      }
-
-      // The light on top. A vertical linear gradient from the top edge of the
-      // block, which is the one kind of gradient that *should* be stretched to
-      // fit: it has no shape to distort. The radial sprite this replaced did,
-      // and on a large or non-square block smeared into something between a
-      // bubble and a fingerprint.
-      //
-      // Grouped by top edge, because a gradient belongs to the box it is
-      // defined in and blocks that start at the same height can share one.
-      // Rows are what a treemap is made of, so that is most of them: measured
-      // at 3200 lit blocks, one gradient each costs 104ms a bake and one per
-      // row costs 8ms. It also makes the light fall the same way on every
-      // block rather than being squeezed into the short ones.
-      const rows = new Map<number, Snapped[]>();
-      for (const r of rects) {
-        if (r.isDir && !plates.has(r.id)) continue;
-        const s = snap(r, dpr, 1);
-        if (s.w < minSide || s.h < minSide) continue;
-        const row = rows.get(s.y);
-        if (row) row.push(s);
-        else rows.set(s.y, [s]);
-      }
-      for (const [top, row] of rows) {
-        const g = ctx.createLinearGradient(0, top, 0, top + span);
-        g.addColorStop(0, GLOSS_LIGHT);
-        g.addColorStop(1, "rgba(255, 255, 255, 0)");
-        ctx.fillStyle = g;
-        ctx.beginPath();
-        for (const s of row) ctx.rect(s.x, s.y, s.w, s.h);
         ctx.fill();
       }
 

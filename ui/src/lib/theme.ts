@@ -31,9 +31,18 @@ const THEME_KEY = "mathom:theme";
 const ACCENT_KEY = "mathom:accent";
 const MODE_KEY = "mathom:colorMode";
 
+/**
+ * Light by default rather than following the system.
+ *
+ * The map is a surface with blocks on it, and those blocks are chosen to read
+ * as surfaces — which they do on a pale plate, where a shade darker reads as
+ * "further in" the way a printed map reads. On near-black the same colours go
+ * luminous and the level ramp competes with the glow. This map is designed on
+ * white; the system default would have shown most people the other one.
+ */
 export function loadThemePref(): ThemePref {
   const v = localStorage.getItem(THEME_KEY);
-  return v === "light" || v === "dark" ? v : "system";
+  return v === "dark" || v === "system" ? v : "light";
 }
 
 export function loadAccent(): AccentName {
