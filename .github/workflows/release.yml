@@ -37,7 +37,10 @@ jobs:
           Compress-Archive -Path $exe -DestinationPath "mathom-${{ github.ref_name }}-windows-x64-portable.zip"
       - uses: softprops/action-gh-release@v2
         with:
-          prerelease: true # alpha: flip when the first stable ships
+          # Upstream kept this true while it was an alpha. This fork ships its
+          # own line, and a badge that says "not ready yet" on every single
+          # release stops meaning anything.
+          prerelease: false
           generate_release_notes: true
           files: |
             target/release/bundle/msi/*.msi
