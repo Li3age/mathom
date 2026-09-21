@@ -28,28 +28,27 @@ export function folderPlate(accent: AccentName): string {
  * The classic scheme: one colour for files, one for folders, ten of them —
  * five accents, each tuned for the theme it will be seen in.
  *
- * The folder is the *lighter* of the two and the file the deeper one, which is
- * the way round a printed map is drawn: the folder is the surface you are
- * looking at, the file is the ink on it. It also has to be this way round for
- * the level ramp to work — both colours darken with depth, so the two runs
- * have to start far enough apart that they never meet. At a gap of 0.23 in
- * OKLab lightness and a ramp that spans 0.09, the closest a deep file ever
- * gets to a shallow folder is 0.14: they cannot be mistaken for each other at
- * any depth, which is the whole reason for picking the pair this way rather
- * than by eye.
+ * Two hues, then, and they carry different jobs: the *hue* says folder or
+ * file, and the *lightness* says how deep in you are. That is why the file has
+ * to start light and stay light — the ramp runs downwards, and a colour that
+ * starts dark has nowhere to go. The pair is a hue and its partner about 155°
+ * round the wheel, which is far enough to never be mistaken at a glance and
+ * near enough to stay a pair rather than two colours that happen to be there.
  *
- * Same hue for both, because "this is a folder and this is a file" is one
- * distinction, and spending two hues on it is what the eleven-category palette
- * already does badly.
+ * The file starts 0.13 of lightness above the folder and the ramp spans 0.09,
+ * so the two runs stay apart at every depth — the deepest file is still lighter
+ * than the shallowest folder. That invariant is the reason for the numbers,
+ * and it is also why the file was not made paler: on a plate this pale, a
+ * lighter file stops being a block at all.
  *
  * The light theme is not the dark theme's values reused. A colour sits
- * differently on a pale plate than on a dark one, so the file tone comes up
- * for the dark theme (0.40 → 0.50) — deep enough to separate from the folder,
- * light enough to stand off a near-black plate. The hue is the one thing that
- * does not move, so a scheme is recognisably the same scheme in either theme.
+ * differently on a pale plate than on a dark one, so the file tone goes up
+ * again for the dark theme (0.76 → 0.82) rather than down. The hues are the
+ * one thing that does not move, so a scheme is recognisably the same scheme in
+ * either theme.
  *
- * Values are OKLCH. Light: folder L 0.630 C 0.070, file L 0.400 C 0.080.
- * Dark: folder L 0.725 C 0.058, file L 0.500 C 0.065.
+ * Values are OKLCH. Light: folder L 0.630 C 0.070, file L 0.760 C 0.085.
+ * Dark: folder L 0.725 C 0.058, file L 0.820 C 0.070.
  */
 export interface Scheme {
   folder: string;
@@ -58,24 +57,24 @@ export interface Scheme {
 
 export const CLASSIC: Record<AccentName, { dark: Scheme; light: Scheme }> = {
   teal: {
-    dark: { folder: "#7bb2b1", file: "#2f6f6e" },
-    light: { folder: "#529795", file: "#005554" },
+    dark: { folder: "#7bb2b1", file: "#e7b2cc" },
+    light: { folder: "#529795", file: "#da9bbb" },
   },
   blue: {
-    dark: { folder: "#8da9cb", file: "#496588" },
-    light: { folder: "#6c8cb3", file: "#274972" },
+    dark: { folder: "#8da9cb", file: "#ebb79d" },
+    light: { folder: "#6c8cb3", file: "#dea181" },
   },
   violet: {
-    dark: { folder: "#ab9fc6", file: "#685b83" },
-    light: { folder: "#8f80ae", file: "#4e3d6c" },
+    dark: { folder: "#ab9fc6", file: "#d3c490" },
+    light: { folder: "#8f80ae", file: "#c2b171" },
   },
   rose: {
-    dark: { folder: "#c89994", file: "#855550" },
-    light: { folder: "#b07974", file: "#6c3531" },
+    dark: { folder: "#c89994", file: "#91d4c6" },
+    light: { folder: "#b07974", file: "#70c3b3" },
   },
   green: {
-    dark: { folder: "#90b090", file: "#4b6d4c" },
-    light: { folder: "#6f956f", file: "#29532b" },
+    dark: { folder: "#90b090", file: "#cabbec" },
+    light: { folder: "#6f956f", file: "#b9a5e0" },
   },
 };
 
