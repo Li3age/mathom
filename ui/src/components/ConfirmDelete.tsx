@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { t } from "../lib/i18n";
 import { api, type DeletePreflight } from "../lib/api";
 import { formatBytes, formatNumber } from "../lib/format";
 import { reportUnlessStale } from "../lib/errors";
@@ -106,7 +107,9 @@ export function ConfirmDelete({
         onMouseDown={(e) => e.stopPropagation()}
         onKeyDown={handleKeyDown}
       >
-        <h2 className="text-sm font-semibold text-ink">Delete this {kind}?</h2>
+        <h2 className="text-sm font-semibold text-ink">
+          {t(kind === "folder" ? "Delete this folder?" : "Delete this file?")}
+        </h2>
 
         <div className="mt-3 rounded-md border border-edge bg-app/60 px-3 py-2">
           <div
@@ -136,7 +139,7 @@ export function ConfirmDelete({
             disabled={busy || blocked !== null}
             onChange={(e) => onPermanentChange(e.target.checked)}
           />
-          Delete permanently (skip the Recycle Bin)
+          {t("Delete permanently (skip the Recycle Bin)")}
         </label>
 
         <p
@@ -146,8 +149,8 @@ export function ConfirmDelete({
         >
           {blocked ??
             (permanent
-              ? "This can't be undone."
-              : "Moves to the Recycle Bin — you can restore it from there.")}
+              ? t("This can't be undone.")
+              : t("Moves to the Recycle Bin — you can restore it from there."))}
         </p>
 
         <div className="mt-4 flex justify-end gap-2">
@@ -170,10 +173,10 @@ export function ConfirmDelete({
             onClick={onConfirm}
           >
             {busy
-              ? "Deleting…"
+              ? t("Deleting…")
               : permanent
-                ? "Delete permanently"
-                : "Move to Recycle Bin"}
+                ? t("Delete permanently")
+                : t("Move to Recycle Bin")}
           </button>
         </div>
       </div>

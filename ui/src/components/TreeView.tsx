@@ -1,6 +1,7 @@
 import { useEffect, useMemo } from "react";
 import { List, useListRef, type RowComponentProps } from "react-window";
 import type { Row, SortKey } from "../lib/api";
+import { t } from "../lib/i18n";
 import type { Sort } from "../hooks/useScan";
 import {
   formatBytes,
@@ -198,7 +199,7 @@ function TreeRow({
         {row.isReparse && (
           <span
             className="ml-1.5 shrink-0 text-[10px] text-ink-5"
-            title="Junction / symlink — not followed"
+            title={t("Junction / symlink — not followed")}
           >
             link
           </span>
@@ -206,7 +207,7 @@ function TreeRow({
         {row.isError && (
           <span
             className="ml-1.5 shrink-0 text-[10px] text-danger-ink/80"
-            title="Could not read this directory"
+            title={t("Could not read this directory")}
           >
             !
           </span>
@@ -270,24 +271,28 @@ function Header({
       style={{ display: "grid", gridTemplateColumns: cols.template }}
     >
       <button className={cls("left")} onClick={() => onSort("name")}>
-        Name{arrow("name")}
+        {t("Name")}
+        {arrow("name")}
       </button>
       <button className={cls("right")} onClick={() => onSort("size")}>
-        Size{arrow("size")}
+        {t("Size")}
+        {arrow("size")}
       </button>
       {cols.pct && (
         <span className="flex items-center justify-end py-1.5 pr-3 text-[11px] font-medium tracking-wide text-ink-5 uppercase">
-          % of parent
+          {t("% of parent")}
         </span>
       )}
       {cols.items && (
         <button className={cls("right")} onClick={() => onSort("items")}>
-          Items{arrow("items")}
+          {t("Items")}
+          {arrow("items")}
         </button>
       )}
       {cols.mtime && (
         <button className={cls("right")} onClick={() => onSort("mtime")}>
-          Modified{arrow("mtime")}
+          {t("Modified")}
+          {arrow("mtime")}
         </button>
       )}
     </div>

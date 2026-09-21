@@ -25,6 +25,7 @@ import {
   type TreemapRect,
 } from "../lib/api";
 import { EASE } from "../lib/ease";
+import { t } from "../lib/i18n";
 import { isStale, reportUnlessStale } from "../lib/errors";
 import { formatBytes, formatPercent } from "../lib/format";
 import {
@@ -1517,7 +1518,7 @@ export function Treemap({
     <div className="flex min-w-0 flex-1 flex-col">
       <div className="flex h-8 shrink-0 items-center gap-1 overflow-hidden border-b border-edge px-3 text-xs">
         {crumbs.length === 0 ? (
-          <span className="text-ink-5">Treemap</span>
+          <span className="text-ink-5">{t("Treemap")}</span>
         ) : (
           crumbs.map((c, i) => (
             <Fragment key={c.id}>
@@ -1555,12 +1556,12 @@ export function Treemap({
         {!hasRects && (
           <div className="absolute inset-0 flex items-center justify-center text-xs text-ink-5">
             {generation === 0
-              ? "Treemap appears here during a scan"
+              ? t("Treemap appears here during a scan")
               : filter
-                ? "Nothing here matches the filter — Esc clears it"
+                ? t("Nothing here matches the filter — Esc clears it")
                 : snapshot?.state === "scanning"
-                  ? "Waiting for data…"
-                  : "Nothing to show here"}
+                  ? t("Waiting for data…")
+                  : t("Nothing to show here")}
           </div>
         )}
         {tooltip && (
@@ -1570,7 +1571,10 @@ export function Treemap({
           >
             <div className="truncate font-medium text-ink">{tooltip.name}</div>
             <div className="tnum text-ink-3">
-              {tooltip.size} · {tooltip.pct} of parent
+              {t("{size} · {pct} of parent", {
+                size: tooltip.size,
+                pct: tooltip.pct,
+              })}
             </div>
             <div className="truncate text-[11px] text-ink-4">
               {tooltip.path}

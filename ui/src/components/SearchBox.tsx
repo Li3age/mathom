@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type SearchHit, type SearchResults } from "../lib/api";
 import { reportUnlessStale } from "../lib/errors";
 import { formatBytes, formatNumber } from "../lib/format";
+import { t } from "../lib/i18n";
 
 const DEBOUNCE_MS = 150;
 
@@ -180,12 +181,14 @@ export function SearchBox({
           if (results && text.trim() !== "") setOpen(true);
         }}
         onKeyDown={onKeyDown}
-        placeholder={HINTS[hint]}
+        placeholder={t(HINTS[hint])}
         spellCheck={false}
         disabled={generation === 0}
         title={
-          "Space-separated filters, all must match:\nname substring · ext:mp4 · >100mb" +
-          (canFilter ? "\nEnter filters every view; Esc clears" : "")
+          t(
+            "Space-separated filters, all must match:\nname substring · ext:mp4 · >100mb",
+          ) +
+          (canFilter ? `\n${t("Enter filters every view; Esc clears")}` : "")
         }
         className={`h-8 w-96 rounded-md border bg-panel px-2.5 text-[13px] text-ink outline-none placeholder:text-ink-5 focus:border-accent-edge disabled:opacity-40 ${
           activeFilter ? "border-accent pr-7" : "border-edge"
@@ -199,8 +202,8 @@ export function SearchBox({
             setResults(null);
             setOpen(false);
           }}
-          title={`Stop filtering by "${activeFilter}"`}
-          aria-label="Clear the view filter"
+          title={t('Stop filtering by "{filter}"', { filter: activeFilter })}
+          aria-label={t("Clear the view filter")}
           className="absolute top-1/2 right-1.5 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-accent-ink hover:bg-raised"
         >
           ✕
@@ -210,10 +213,17 @@ export function SearchBox({
         <div className="absolute top-9 right-0 z-50 w-[26rem] overflow-hidden rounded-md border border-edge-strong bg-panel shadow-xl">
           <div className="border-b border-edge px-3 py-1 text-[11px] text-ink-4">
             {results.total === 0
-              ? "No matches"
+              ? t("No matches")
               : results.hits.length < results.total
-                ? `Largest ${results.hits.length} of ${formatNumber(results.total)} matches`
-                : `${formatNumber(results.total)} ${results.total === 1 ? "match" : "matches"}`}
+                ? t("Largest {shown} of {total} matches", {
+                    shown: results.hits.length,
+                    total: formatNumber(results.total),
+                  })
+                : results.total === 1
+                  ? t("{count} match", { count: formatNumber(results.total) })
+                  : t("{count} matches", {
+                      count: formatNumber(results.total),
+                    })}
           </div>
           {results.hits.length > 0 && (
             <div className="max-h-80 overflow-y-auto py-1">

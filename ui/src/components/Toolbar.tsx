@@ -1,12 +1,14 @@
 import type { SearchHit } from "../lib/api";
 import type { DepthPref } from "../lib/prefs";
 import type { AccentName, ColorMode, ThemePref } from "../lib/theme";
+import type { Lang } from "../lib/i18n";
 import { ExportMenu } from "./ExportMenu";
 import { ScanMenu } from "./ScanMenu";
 import { SearchBox } from "./SearchBox";
 import { SettingsMenu } from "./SettingsMenu";
 import { WindowControls } from "./WindowControls";
 import { PanelRightIcon } from "./icons";
+import { t } from "../lib/i18n";
 
 interface ToolbarProps {
   scanning: boolean;
@@ -21,6 +23,7 @@ interface ToolbarProps {
   themePref: ThemePref;
   accent: AccentName;
   mode: ColorMode;
+  lang: Lang;
   onScan: (path: string) => void;
   onCancel: () => void;
   onToggleHideSystem: () => void;
@@ -32,6 +35,7 @@ interface ToolbarProps {
   onThemePref: (pref: ThemePref) => void;
   onAccent: (accent: AccentName) => void;
   onMode: (mode: ColorMode) => void;
+  onLang: (lang: Lang) => void;
 }
 
 export function Toolbar({
@@ -47,6 +51,7 @@ export function Toolbar({
   themePref,
   accent,
   mode,
+  lang,
   onScan,
   onCancel,
   onToggleHideSystem,
@@ -58,6 +63,7 @@ export function Toolbar({
   onThemePref,
   onAccent,
   onMode,
+  onLang,
 }: ToolbarProps) {
   return (
     // The toolbar is the title bar (undecorated window): drag-region spacers drag it; children stay interactive.
@@ -70,7 +76,7 @@ export function Toolbar({
           onClick={onCancel}
           className="h-8 rounded-md border border-danger-edge/70 px-3.5 text-[13px] text-danger-ink hover:bg-danger-soft/40"
         >
-          Cancel
+          {t("Cancel")}
         </button>
       ) : (
         <ScanMenu onScan={onScan} />
@@ -92,8 +98,8 @@ export function Toolbar({
       <div data-tauri-drag-region className="min-w-4 flex-1" />
       <button
         onClick={onToggleTypePanel}
-        title="Show or hide the file-types panel"
-        aria-label="File-types panel"
+        title={t("Show or hide the file-types panel")}
+        aria-label={t("File-types panel")}
         className={`ml-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-md border ${
           typePanelOpen
             ? "border-edge-strong bg-raised text-ink"
@@ -115,12 +121,14 @@ export function Toolbar({
         themePref={themePref}
         accent={accent}
         mode={mode}
+        lang={lang}
         onToggleHideSystem={onToggleHideSystem}
         onToggleShowLabels={onToggleShowLabels}
         onDepth={onDepth}
         onThemePref={onThemePref}
         onAccent={onAccent}
         onMode={onMode}
+        onLang={onLang}
       />
       <WindowControls />
     </header>

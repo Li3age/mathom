@@ -12,6 +12,7 @@ import {
 import { isStale, reportUnlessStale } from "../lib/errors";
 import { formatBytes, formatNumber, formatPercent } from "../lib/format";
 import { PALETTE } from "../lib/palette";
+import { t } from "../lib/i18n";
 
 const SCAN_REFRESH_MS = 700;
 const TYPE_ROW_HEIGHT = 24;
@@ -97,18 +98,20 @@ export function TypePanel({
     <div className="flex w-64 shrink-0 flex-col border-l border-edge">
       <div className="flex h-8 shrink-0 items-center border-b border-edge px-3">
         <span className="text-[11px] font-medium tracking-wide text-ink-4 uppercase">
-          File types
+          {t("File types")}
         </span>
       </div>
       <div className="min-h-0 flex-1 pt-1.5">
         {data === null ? (
           generation === 0 ? (
             <div className="px-3 py-2 text-xs text-ink-5">
-              Appears during a scan
+              {t("Appears during a scan")}
             </div>
           ) : null
         ) : data.totalFiles === 0 ? (
-          <div className="px-3 py-2 text-xs text-ink-5">No files here</div>
+          <div className="px-3 py-2 text-xs text-ink-5">
+            {t("No files here")}
+          </div>
         ) : (
           <List
             rowComponent={TypeRow}
@@ -128,7 +131,7 @@ export function TypePanel({
       {data !== null && data.topFiles.length > 0 && (
         <div className="shrink-0 border-t border-edge pb-1.5">
           <div className="px-3 pt-2 pb-1 text-[11px] font-medium tracking-wide text-ink-4 uppercase">
-            Largest files
+            {t("Largest files")}
           </div>
           {data.topFiles.map((f) => (
             <button
@@ -168,41 +171,43 @@ function TypeRow({
   canFilter,
   onFilterType,
 }: RowComponentProps<TypeRowsProps>) {
-  const t = types[index];
+  const stat = types[index];
   // "(no extension)" can't be expressed in the search grammar — not clickable,
   // and neither is anything mid-scan, when a filter would freeze at whatever
   // the tree happened to hold.
-  const clickable = canFilter && t.ext !== "";
-  const active = activeExts.includes(t.ext);
+  const clickable = canFilter && stat.ext !== "";
+  const active = activeExts.includes(stat.ext);
   return (
     <div
       style={style}
       className={`flex items-center gap-2 px-3 text-xs ${
         active ? "bg-accent-soft/25" : clickable ? "hover:bg-hush" : ""
       }`}
-      title={clickable ? "Click filters to this type · shift-click adds" : ""}
+      title={
+        clickable ? t("Click filters to this type · shift-click adds") : ""
+      }
       onClick={(e) => {
-        if (clickable) onFilterType(t.ext, e.shiftKey);
+        if (clickable) onFilterType(stat.ext, e.shiftKey);
       }}
     >
       <span
         className="h-2 w-2 shrink-0 rounded-[3px]"
-        style={{ background: PALETTE[t.category] ?? PALETTE[10] }}
+        style={{ background: PALETTE[stat.category] ?? PALETTE[10] }}
       />
       <span className="min-w-0 flex-1 truncate text-ink-2">
-        {t.ext === "" ? "(no extension)" : `.${t.ext}`}
+        {stat.ext === "" ? t("(no extension)") : `.${stat.ext}`}
       </span>
       <span
         className="tnum shrink-0 text-[11px] text-ink-5"
-        title={`${formatNumber(t.files)} files`}
+        title={`${formatNumber(stat.files)} files`}
       >
-        {formatNumber(t.files)}
+        {formatNumber(stat.files)}
       </span>
       <span className="tnum w-16 shrink-0 text-right text-ink-3">
-        {formatBytes(t.bytes)}
+        {formatBytes(stat.bytes)}
       </span>
       <span className="tnum w-9 shrink-0 text-right text-[11px] text-ink-5">
-        {formatPercent(totalBytes > 0 ? t.bytes / totalBytes : 0)}
+        {formatPercent(totalBytes > 0 ? stat.bytes / totalBytes : 0)}
       </span>
     </div>
   );

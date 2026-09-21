@@ -18,6 +18,7 @@ import {
 } from "./lib/api";
 import { copyText } from "./lib/clipboard";
 import { layoutDepth } from "./lib/prefs";
+import { type Lang, applyLang, loadLang, t } from "./lib/i18n";
 import { onUiError, reportUiError, reportUnlessStale } from "./lib/errors";
 
 const TREE_PANE_MIN = 320;
@@ -39,17 +40,18 @@ const zoomMenuItems = (
   const { inId, outId } = zoom;
   const items: MenuItem[] = [];
   if (inId !== null)
-    items.push({ label: "Zoom in", onClick: () => navigate(inId) });
+    items.push({ label: t("Zoom in"), onClick: () => navigate(inId) });
   if (outId !== null)
-    items.push({ label: "Zoom out", onClick: () => navigate(outId) });
+    items.push({ label: t("Zoom out"), onClick: () => navigate(outId) });
   if (!atScanRoot)
-    items.push({ label: "Reset zoom", onClick: () => navigate(0) });
+    items.push({ label: t("Reset zoom"), onClick: () => navigate(0) });
   return items;
 };
 
 export default function App() {
   const scan = useScan();
   const theme = useTheme();
+  const [lang, setLang] = useState<Lang>(loadLang);
   const [selected, setSelected] = useState<number | null>(null);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [viewRootId, setViewRootId] = useState(0);
@@ -77,6 +79,10 @@ export default function App() {
   const [elevation, setElevation] = useState<ElevationStatus | null>(null);
   const [elevationDismissed, setElevationDismissed] = useState(false);
   const splitRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    applyLang(lang);
+  }, [lang]);
 
   useEffect(() => {
     api
@@ -311,15 +317,15 @@ export default function App() {
   const menuItems: MenuItem[] = menu
     ? [
         {
-          label: "Open in Explorer",
+          label: t("Open in Explorer"),
           onClick: () =>
             void api
               .openInExplorer(generation, menu.target.id)
               .catch((e) => reportUiError("opening in Explorer", e)),
         },
-        { label: "Copy path", onClick: () => copyPath(menu.target.id) },
+        { label: t("Copy path"), onClick: () => copyPath(menu.target.id) },
         {
-          label: menu.target.isDir ? "Delete folder…" : "Delete file…",
+          label: t(menu.target.isDir ? "Delete folder…" : "Delete file…"),
           danger: true,
           onClick: () => setConfirm({ target: menu.target, permanent: false }),
         },
@@ -371,6 +377,7 @@ export default function App() {
         themePref={theme.pref}
         accent={theme.accent}
         mode={theme.mode}
+        lang={lang}
         onScan={handleScan}
         onCancel={scan.cancel}
         onToggleHideSystem={scan.toggleHideSystem}
@@ -382,6 +389,7 @@ export default function App() {
         onThemePref={theme.setPref}
         onAccent={theme.setAccent}
         onMode={theme.setMode}
+        onLang={setLang}
       />
       {elevation !== null && !elevation.elevated && !elevationDismissed && (
         <ElevationBanner
@@ -508,22 +516,24 @@ function ElevationBanner({
   return (
     <div className="flex shrink-0 items-center gap-3 border-b border-edge bg-panel/70 px-3 py-1.5 text-xs">
       <span className="min-w-0 truncate text-ink-3">
-        Running without administrator rights — scans use the slower folder
-        walker and skip files it can't read.
-        {devBuild && " Start the dev loop from an elevated terminal instead."}
+        {t(
+          "Running without administrator rights — scans use the slower folder walker and skip files it can't read.",
+        )}
+        {devBuild &&
+          ` ${t("Start the dev loop from an elevated terminal instead.")}`}
       </span>
       {!devBuild && (
         <button
           className="shrink-0 rounded border border-accent-edge/60 px-2 py-0.5 text-accent-ink hover:bg-accent-soft/40"
           onClick={onRelaunch}
         >
-          Relaunch as administrator
+          {t("Relaunch as administrator")}
         </button>
       )}
       <button
         className="ml-auto shrink-0 px-1 text-ink-5 hover:text-ink-2"
         onClick={onDismiss}
-        aria-label="Dismiss"
+        aria-label={t("Dismiss")}
       >
         ✕
       </button>
@@ -537,15 +547,17 @@ function EmptyState({ snapshot }: { snapshot: Snapshot | null }) {
     <div className="flex min-h-0 flex-1 flex-col items-center justify-center">
       {failed ? (
         <p className="text-sm text-danger-ink">
-          Scan failed: {snapshot?.rootError ?? "unknown error"}
+          {t("Scan failed: {error}", {
+            error: snapshot?.rootError ?? t("unknown error"),
+          })}
         </p>
       ) : (
         <div className="text-center">
           <p className="text-sm text-ink-3">
-            Choose a folder and start a scan.
+            {t("Choose a folder and start a scan.")}
           </p>
           <p className="mt-1.5 text-xs text-ink-5">
-            The tree and treemap fill in live while the scan runs.
+            {t("The tree and treemap fill in live while the scan runs.")}
           </p>
         </div>
       )}

@@ -1,5 +1,6 @@
 import type { Snapshot } from "../lib/api";
 import { formatBytes, formatElapsed, formatNumber } from "../lib/format";
+import { t } from "../lib/i18n";
 
 interface StatusBarProps {
   snapshot: Snapshot | null;
@@ -10,15 +11,19 @@ interface StatusBarProps {
 function stateLabel(snapshot: Snapshot | null): string {
   switch (snapshot?.state) {
     case "scanning":
-      return "Scanning…";
+      return t("Scanning…");
     case "done":
-      return `Scan complete in ${formatElapsed(snapshot.elapsedMs)}`;
+      return t("Scan complete in {elapsed}", {
+        elapsed: formatElapsed(snapshot.elapsedMs),
+      });
     case "cancelled":
-      return "Scan cancelled";
+      return t("Scan cancelled");
     case "failed":
-      return `Scan failed: ${snapshot.rootError ?? "unknown error"}`;
+      return t("Scan failed: {error}", {
+        error: snapshot.rootError ?? t("unknown error"),
+      });
     default:
-      return "Ready";
+      return t("Ready");
   }
 }
 
@@ -45,8 +50,11 @@ export function StatusBar({ snapshot, selectedPath, uiError }: StatusBarProps) {
       </span>
       {snapshot !== null && state !== "idle" && (
         <span className="tnum shrink-0">
-          {formatNumber(snapshot.files)} files · {formatNumber(snapshot.dirs)}{" "}
-          folders · {formatBytes(snapshot.bytes)}
+          {t("{files} files · {folders} folders · {size}", {
+            files: formatNumber(snapshot.files),
+            folders: formatNumber(snapshot.dirs),
+            size: formatBytes(snapshot.bytes),
+          })}
           {state === "scanning" &&
             ` · ${formatElapsed(snapshot.elapsedMs)} · ${formatNumber(rate)}/s`}
         </span>
@@ -61,7 +69,7 @@ export function StatusBar({ snapshot, selectedPath, uiError }: StatusBarProps) {
       )}
       {snapshot !== null && snapshot.errors > 0 && (
         <span className="tnum shrink-0 text-warn/90">
-          {formatNumber(snapshot.errors)} unreadable
+          {t("{count} unreadable", { count: formatNumber(snapshot.errors) })}
         </span>
       )}
       <span
@@ -71,7 +79,7 @@ export function StatusBar({ snapshot, selectedPath, uiError }: StatusBarProps) {
         {selectedPath ?? ""}
       </span>
       <span className="tnum shrink-0">
-        {formatNumber(snapshot?.nodes ?? 0)} nodes
+        {t("{count} nodes", { count: formatNumber(snapshot?.nodes ?? 0) })}
       </span>
     </footer>
   );

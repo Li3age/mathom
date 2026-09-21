@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { CloseIcon, MaximizeIcon, MinimizeIcon, RestoreIcon } from "./icons";
+import { t } from "../lib/i18n";
 
 /** Minimize/maximize/close for the undecorated window; buttons stretch the toolbar's full height, flush with the edge. */
 export function WindowControls() {
@@ -27,21 +28,21 @@ export function WindowControls() {
     <div className="-my-2 -mr-3 ml-1 flex shrink-0 self-stretch">
       <button
         onClick={() => void win.minimize()}
-        aria-label="Minimize"
+        aria-label={t("Minimize")}
         className={cls}
       >
         <MinimizeIcon />
       </button>
       <button
         onClick={() => void win.toggleMaximize()}
-        aria-label={maximized ? "Restore" : "Maximize"}
+        aria-label={t(maximized ? "Restore" : "Maximize")}
         className={cls}
       >
         {maximized ? <RestoreIcon /> : <MaximizeIcon />}
       </button>
       <button
         onClick={() => void win.close()}
-        aria-label="Close"
+        aria-label={t("Close")}
         className="flex w-11 items-center justify-center text-ink-4 hover:bg-danger hover:text-white"
       >
         <CloseIcon />

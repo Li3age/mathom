@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { api, type ExportFormat } from "../lib/api";
 import { copyText } from "../lib/clipboard";
+import { t } from "../lib/i18n";
 import { ExportIcon } from "./icons";
 
 const DEPTHS = ["all", "1", "2"] as const;
@@ -61,8 +62,13 @@ export function ExportMenu({
         const ok = await copyText(res.text);
         setStatus(
           ok
-            ? { ok, msg: `Copied ${res.rows.toLocaleString()} rows` }
-            : { ok, msg: "Clipboard refused the copy" },
+            ? {
+                ok,
+                msg: t("Copied {rows} rows", {
+                  rows: res.rows.toLocaleString(),
+                }),
+              }
+            : { ok, msg: t("Clipboard refused the copy") },
         );
       } else {
         const dest = await save({
@@ -93,10 +99,10 @@ export function ExportMenu({
         disabled={disabled}
         title={
           disabled
-            ? "Export needs a finished scan"
-            : "Export the current view as CSV or JSON"
+            ? t("Export needs a finished scan")
+            : t("Export the current view as CSV or JSON")
         }
-        aria-label="Export"
+        aria-label={t("Export")}
         className={`ml-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-md border disabled:cursor-not-allowed disabled:opacity-40 ${
           open
             ? "border-edge-strong bg-raised text-ink"
@@ -126,7 +132,7 @@ export function ExportMenu({
             ))}
           </div>
           <div className="mt-3 text-[11px] font-medium tracking-wide text-ink-4 uppercase">
-            Depth
+            {t("Depth")}
           </div>
           <div className="mt-1.5 flex rounded-md border border-edge p-0.5">
             {DEPTHS.map((d) => (
@@ -139,7 +145,7 @@ export function ExportMenu({
                     : "text-ink-4 hover:text-ink-2"
                 }`}
               >
-                {d === "all" ? "All" : d}
+                {d === "all" ? t("All") : d}
               </button>
             ))}
             <input
@@ -158,7 +164,7 @@ export function ExportMenu({
                 }
               }}
               placeholder="3+"
-              title="Any depth — type a number"
+              title={t("Any depth — type a number")}
               className={`h-6 w-0 min-w-0 flex-1 rounded text-center text-[12px] outline-none placeholder:text-ink-5 ${
                 !DEPTHS.includes(depth as (typeof DEPTHS)[number])
                   ? "bg-raised text-ink"
@@ -173,7 +179,7 @@ export function ExportMenu({
               checked={dirsOnly}
               onChange={(e) => setDirsOnly(e.target.checked)}
             />
-            Folders only
+            {t("Folders only")}
           </label>
           <div className="mt-3 flex gap-2">
             <button
