@@ -1,4 +1,4 @@
-import type { AccentName } from "./theme";
+import type { AccentName, ColorMode } from "./theme";
 
 /**
  * The colour of a folder block, per accent — and this is the map's *tone*.
@@ -24,9 +24,102 @@ export function folderPlate(accent: AccentName): string {
   return FOLDER_PLATES[accent] ?? FOLDER_PLATES.teal;
 }
 
-/** The highlight and shadow of a block's 1px bevel. */
-export const BEVEL_LIGHT = "rgba(255, 255, 255, 0.10)";
-export const BEVEL_DARK = "rgba(0, 0, 0, 0.22)";
+/**
+ * The classic scheme: one colour for files, one for folders, ten of them —
+ * five accents, each tuned for the theme it will be seen in.
+ *
+ * The folder colour is the map's tone, so it is the accent's own hue at the
+ * weight the map already uses for its plates. The file colour is that *same
+ * hue, lighter*: the map then has one colour in two weights, and the weights
+ * are the only thing it needs to say — a dark block still has something inside
+ * it, a light one is the end of the branch. Two unrelated hues, which is what
+ * the eleven-category palette amounts to, say nothing at a glance; this says
+ * one thing instantly.
+ *
+ * The light theme is not the dark theme's values reused. A colour sits
+ * differently on a pale plate than on a dark one — the same teal that reads as
+ * a solid surface on near-black goes chalky on #d8d9dc — so each scheme is
+ * deepened and given a little more chroma for the light theme. The hue is the
+ * one thing that does not move, so a scheme is recognisably the same scheme in
+ * either theme.
+ *
+ * Values are OKLCH: dark folder L 0.525 C 0.038, dark file L 0.725 C 0.058,
+ * light folder L 0.470 C 0.055, light file L 0.630 C 0.070.
+ */
+export interface Scheme {
+  folder: string;
+  file: string;
+}
+
+export const CLASSIC: Record<AccentName, { dark: Scheme; light: Scheme }> = {
+  teal: {
+    dark: { folder: "#507271", file: "#7bb2b1" },
+    light: { folder: "#326564", file: "#529795" },
+  },
+  blue: {
+    dark: { folder: "#5c6c80", file: "#8da9cb" },
+    light: { folder: "#455d79", file: "#6c8cb3" },
+  },
+  violet: {
+    dark: { folder: "#6d667d", file: "#ab9fc6" },
+    light: { folder: "#5f5476", file: "#8f80ae" },
+  },
+  rose: {
+    dark: { folder: "#7f625f", file: "#c89994" },
+    light: { folder: "#774f4b", file: "#b07974" },
+  },
+  green: {
+    dark: { folder: "#5d705d", file: "#90b090" },
+    light: { folder: "#476348", file: "#6f956f" },
+  },
+};
+
+/** One colour per `Category`, folder included at index 0. */
+export interface BlockColors {
+  folder: string;
+  byCategory: readonly string[];
+}
+
+/** The classic scheme's file colour repeated for every category, cached. */
+const flatCache = new Map<string, readonly string[]>();
+
+function flat(file: string): readonly string[] {
+  let row = flatCache.get(file);
+  if (!row) {
+    row = PALETTE.map(() => file);
+    flatCache.set(file, row);
+  }
+  return row;
+}
+
+/**
+ * What the map paints with, for the mode, accent and theme in force. Classic
+ * deliberately returns the same shape as multi — one colour per category —
+ * with every category holding the same value, so the painting code does not
+ * need to know which mode it is in.
+ */
+export function blockColors(
+  mode: ColorMode,
+  accent: AccentName,
+  theme: "light" | "dark",
+): BlockColors {
+  if (mode === "classic") {
+    const scheme = CLASSIC[accent]?.[theme] ?? CLASSIC.teal.dark;
+    return {
+      folder: scheme.folder,
+      byCategory: flat(scheme.file),
+    };
+  }
+  return { folder: folderPlate(accent), byCategory: PALETTE };
+}
+
+/**
+ * The light that falls on the top of a block. One value, drawn as a short
+ * fade down from the top edge — a surface catching the light, the way every
+ * raised panel in the OS this imitates does it. It replaced a 1px bevel: two
+ * hairlines read as a technical drawing, one soft edge reads as a solid.
+ */
+export const GLOSS_LIGHT = "rgba(255, 255, 255, 0.10)";
 
 // Indexed by mathom-core's `Category as u8`.
 //
@@ -92,13 +185,17 @@ function luminance(r: number, g: number, b: number): number {
  * literal near-black or near-white rather than a theme token — a token would
  * be chosen for the plate, not for the colour actually underneath.
  *
- * The threshold is low because the palette's blocks are: every category sits
- * near 0.34 luminance, where dark ink reads at about 4.8:1 and white at 2.6:1.
- * Only the folder plates, half that again, take white.
+ * The threshold is low because the blocks are: the eleven categories sit near
+ * 0.34 luminance, where dark ink reads at about 4.8:1 and white at 2.6:1, and
+ * the classic schemes' lighter halves come in lower still. A block only takes
+ * white when it is genuinely dark — the folder plates, and nothing else. The
+ * mid-tones in between are the reason for the exact number: at 0.25 a light
+ * theme's file colour lands a hair either side of it and takes white on the
+ * wrong side, where dark ink would have been 1.7:1 better.
  */
 export function textOn(fill: string): string {
   const [r, g, b] = rgb(fill);
-  return luminance(r, g, b) > 0.25
+  return luminance(r, g, b) > 0.18
     ? "rgba(12, 12, 14, 0.92)"
     : "rgba(250, 250, 250, 0.92)";
 }

@@ -13,8 +13,23 @@ export const ACCENTS = {
 
 export type AccentName = keyof typeof ACCENTS;
 
+/**
+ * How the map is coloured. `multi` gives every file category its own hue;
+ * `classic` gives files one colour and folders another, and lets the accent
+ * carry the whole picture.
+ *
+ * Two, because eleven hues on one map is a map where nothing is emphasised:
+ * each category shouts as loudly as the one next to it, and the only thing the
+ * reader can take from it is "there is a lot of stuff". One hue in two weights
+ * says the thing that actually matters at a glance — this is a folder you can
+ * open, this is a file — and it is the accent, not the file type, that sets
+ * the map's tone.
+ */
+export type ColorMode = "multi" | "classic";
+
 const THEME_KEY = "mathom:theme";
 const ACCENT_KEY = "mathom:accent";
+const MODE_KEY = "mathom:colorMode";
 
 export function loadThemePref(): ThemePref {
   const v = localStorage.getItem(THEME_KEY);
@@ -26,9 +41,23 @@ export function loadAccent(): AccentName {
   return v !== null && v in ACCENTS ? (v as AccentName) : "teal";
 }
 
-export function saveThemeSettings(pref: ThemePref, accent: AccentName) {
+export function loadColorMode(): ColorMode {
+  return localStorage.getItem(MODE_KEY) === "classic" ? "classic" : "multi";
+}
+
+export function saveThemeSettings(
+  pref: ThemePref,
+  accent: AccentName,
+  mode: ColorMode,
+) {
   localStorage.setItem(THEME_KEY, pref);
   localStorage.setItem(ACCENT_KEY, accent);
+  localStorage.setItem(MODE_KEY, mode);
+}
+
+/** The theme the document is actually painted in — what the CSS resolved to. */
+export function activeTheme(): "light" | "dark" {
+  return document.documentElement.dataset.theme === "light" ? "light" : "dark";
 }
 
 export function resolvedTheme(

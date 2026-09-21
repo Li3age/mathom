@@ -16,7 +16,7 @@ import {
   useRef,
   useState,
 } from "react";
-import type { AccentName } from "../lib/theme";
+import { activeTheme, type AccentName, type ColorMode } from "../lib/theme";
 import {
   api,
   type Crumb,
@@ -24,14 +24,14 @@ import {
   type Snapshot,
   type TreemapRect,
 } from "../lib/api";
+import { EASE } from "../lib/ease";
 import { isStale, reportUnlessStale } from "../lib/errors";
 import { formatBytes, formatPercent } from "../lib/format";
 import {
-  BEVEL_DARK,
-  BEVEL_LIGHT,
-  PALETTE,
+  GLOSS_LIGHT,
+  type BlockColors,
+  blockColors,
   canvasColors,
-  folderPlate,
   textOn,
 } from "../lib/palette";
 
@@ -41,20 +41,27 @@ const TOOLTIP_DELAY_MS = 120;
 /**
  * How long each kind of change takes. One place, because a map whose blocks
  * move at one speed and whose view zooms at another reads as two things
- * happening rather than one.
+ * happening rather than one. The curves live next to each other in `EASE`.
  */
 const MOTION = {
-  /** Changing the view root — the picture scaling into its new place. */
-  zoom: 220,
+  /** Changing the view root — the camera moving between two layouts. */
+  zoom: 300,
   /** A folder opening or closing inside the view. */
-  open: 160,
+  open: 200,
   /** The same map refitted: a resize, a filter, another scan tick. */
-  move: 150,
+  move: 170,
+  /** The same map in different colours: another accent, another mode. */
+  recolor: 200,
   /** Refits smaller than this are the scan breathing, not the map moving. */
   moveMinPx: 2,
 } as const;
 
-const easeOut = (t: number) => 1 - (1 - t) * (1 - t);
+/** Names step aside quickly when the map moves, and return unhurriedly. */
+const LABEL_FADE_OUT_MS = 80;
+const LABEL_FADE_IN_MS = 140;
+
+/** How many view roots back Backspace remembers. */
+const BACK_HISTORY_MAX = 64;
 
 /** The system asking for less motion is not a suggestion. */
 function reducedMotion(): boolean {
@@ -102,11 +109,11 @@ function fitText(
 }
 
 /**
- * Names, drawn into the blocks themselves, when the view asks for them. A map
- * of coloured rectangles tells you where the space went; it does not tell you
- * what any of it is without hovering each one, and hovering every block is the
- * work this saves. It is off by default because the blocks are also the map,
- * and writing in all of them changes what the map reads like.
+ * Names, written into the blocks themselves, when the view asks for them. A
+ * map of coloured rectangles tells you where the space went; it does not tell
+ * you what any of it is without hovering each one, and hovering every block is
+ * the work this saves. On by default, because the colours are deliberately
+ * quiet and the names are what carry the reading.
  *
  * A pure overlay: it reads the rects the layout already produced and writes
  * text into the boxes, so the geometry with this on is the geometry with it
@@ -120,7 +127,7 @@ function drawLabels(
   ctx: CanvasRenderingContext2D,
   rects: TreemapRect[],
   dpr: number,
-  folder: string,
+  colors: BlockColors,
 ) {
   ctx.font = `${LABEL_SIZE_PX * dpr}px ${LABEL_FONT}`;
   ctx.textBaseline = "middle";
@@ -137,7 +144,9 @@ function drawLabels(
     const s = snap(r, dpr, 1);
     if (s.w < minW || s.h < LABEL_MIN_H_PX * dpr) continue;
     ctx.fillStyle = textOn(
-      r.isDir ? folder : (PALETTE[r.category] ?? PALETTE[10]),
+      r.isDir
+        ? colors.folder
+        : (colors.byCategory[r.category] ?? colors.byCategory[10]),
     );
     const name = fitText(ctx, r.name, s.w - 2 * pad);
     if (!name) continue;
@@ -152,10 +161,24 @@ function drawLabels(
 }
 
 /**
- * Blocks big enough to carry an edge. On a 6px block a 2px bevel eats a third
- * of it, and the smallest blocks are the ones there are most of.
+ * Corner radius, as a fraction of the block's short side, with a ceiling and
+ * a floor. The ratio is what makes a big block read as a rounded card; the
+ * ceiling is what keeps a half-map-sized block from looking like a pill; and
+ * the floor is what keeps a 6px block square — rounding the smallest blocks
+ * turns a dense corner of the map into a field of dots, and those are the
+ * blocks there are most of.
  */
-const BEVEL_MIN_PX = 12;
+const CORNER_RATIO = 0.1;
+const CORNER_MAX_PX = 7;
+const CORNER_MIN_SIDE_PX = 8;
+
+/**
+ * The light on the top of a block: a fade from the top edge, at most this
+ * tall. Only blocks with a short side this big get one — on a 6px block the
+ * light is the whole block.
+ */
+const GLOSS_MIN_PX = 12;
+const GLOSS_SPAN_PX = 18;
 
 interface Snapped {
   x: number;
@@ -172,6 +195,112 @@ function snap(r: TreemapRect, dpr: number, gap: number): Snapped {
   return { x: x0, y: y0, w: x1 - x0 - gap, h: y1 - y0 - gap };
 }
 
+/** The same rect in device pixels, fractional — the camera's unit. */
+function frame(r: TreemapRect, dpr: number): Snapped {
+  return { x: r.x * dpr, y: r.y * dpr, w: r.w * dpr, h: r.h * dpr };
+}
+
+function cornerRadius(s: Snapped, dpr: number): number {
+  const min = Math.min(s.w, s.h);
+  if (min < CORNER_MIN_SIDE_PX * dpr) return 0;
+  return Math.min(min * CORNER_RATIO, CORNER_MAX_PX * dpr);
+}
+
+/**
+ * `roundRect` is a path method like `rect`, so the batching that paints the
+ * map by colour survives; it is just newer than `rect`. The arcs are only for
+ * a runtime too old to have it, which is not one this ships against.
+ */
+function roundRectPath(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  r: number,
+) {
+  if (r <= 0) {
+    ctx.rect(x, y, w, h);
+    return;
+  }
+  if (typeof ctx.roundRect === "function") {
+    ctx.roundRect(x, y, w, h, r);
+    return;
+  }
+  const a = Math.min(r, w / 2, h / 2);
+  ctx.moveTo(x + a, y);
+  ctx.arcTo(x + w, y, x + w, y + h, a);
+  ctx.arcTo(x + w, y + h, x, y + h, a);
+  ctx.arcTo(x, y + h, x, y, a);
+  ctx.arcTo(x, y, x + w, y, a);
+  ctx.closePath();
+}
+
+const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+
+function lerpRect(a: Snapped, b: Snapped, t: number): Snapped {
+  return {
+    x: lerp(a.x, b.x, t),
+    y: lerp(a.y, b.y, t),
+    w: lerp(a.w, b.w, t),
+    h: lerp(a.h, b.h, t),
+  };
+}
+
+/**
+ * Where `box` lands when a picture is moved so that its `from` rectangle sits
+ * on `to` — the picture's whole frame going along for the ride.
+ *
+ * This one function is the whole zoom. Two pictures are drawn with it at
+ * every frame — the layout being left, mapped `from → u`, and the layout
+ * arriving, mapped `to → u` — so at any instant both have the folder being
+ * entered or left lying on exactly the same patch of screen. That is what
+ * makes the two layers read as one movement instead of two pictures ghosted
+ * over each other, and it is why zooming out is not a second animation to
+ * write: the same two lines run, with `from` and `to` swapped.
+ *
+ * Both ends are exact. When `from` and `to` are the same rectangle this is the
+ * identity, so at `t = 0` the picture being left is drawn as it stands, and at
+ * `t = 1` the one arriving is (its `to` has become `u` itself) — the last frame
+ * is the settled map, pixel for pixel, and nothing snaps when the animation
+ * ends.
+ */
+function rectMap(box: Snapped, from: Snapped, to: Snapped): Snapped {
+  const sx = to.w / Math.max(1, from.w);
+  const sy = to.h / Math.max(1, from.h);
+  return {
+    x: to.x - from.x * sx,
+    y: to.y - from.y * sy,
+    w: box.w * sx,
+    h: box.h * sy,
+  };
+}
+
+/**
+ * Draw one folder's own patch of `pic` onto itself, scaled about the middle
+ * of its frame and clipped to it — the patch, not the whole picture, which
+ * would drag the rest of the map in towards this centre along with it.
+ */
+function scaleAbout(
+  ctx: CanvasRenderingContext2D,
+  pic: CanvasImageSource,
+  box: Snapped,
+  k: number,
+) {
+  if (k <= 0.002) return;
+  const cx = box.x + box.w / 2;
+  const cy = box.y + box.h / 2;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(box.x, box.y, box.w, box.h);
+  ctx.clip();
+  ctx.translate(cx, cy);
+  ctx.scale(k, k);
+  ctx.translate(-cx, -cy);
+  ctx.drawImage(pic, box.x, box.y, box.w, box.h, box.x, box.y, box.w, box.h);
+  ctx.restore();
+}
+
 /** Rects with no children of their own — the ones a click can open. */
 function solidPlates(rects: TreemapRect[]): Set<number> {
   const plates = new Set<number>();
@@ -182,6 +311,16 @@ function solidPlates(rects: TreemapRect[]): Set<number> {
     if (r.isDir && !((rects[i + 1]?.depth ?? 0) > r.depth)) plates.add(r.id);
   }
   return plates;
+}
+
+/** Directories the layout subdivided — the ones showing what is inside. */
+function dirsWithChildren(rects: TreemapRect[]): Set<number> {
+  const open = new Set<number>();
+  for (let i = 0; i < rects.length; i++) {
+    const r = rects[i];
+    if (r.isDir && (rects[i + 1]?.depth ?? 0) > r.depth) open.add(r.id);
+  }
+  return open;
 }
 
 /**
@@ -231,6 +370,11 @@ export interface TreemapProps {
   /** Which colour scheme the map paints in — the same choice as the accent. */
   accent: AccentName;
   /**
+   * Multi: a hue per file category. Classic: one colour for files, one for
+   * folders, both from the accent.
+   */
+  mode: ColorMode;
+  /**
    * Depth setting: null is Auto, where the layout decides how deep to go.
    * A number is a fixed cap, which is a *different* layout rule, not just a
    * shorter one — see `TreemapOptions::adaptive_depth`.
@@ -260,6 +404,7 @@ export function Treemap({
   filter,
   labels,
   accent,
+  mode,
   maxDepth,
   selected,
   hoveredId,
@@ -270,6 +415,7 @@ export function Treemap({
 }: TreemapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const baseRef = useRef<HTMLCanvasElement>(null);
+  const labelRef = useRef<HTMLCanvasElement>(null);
   const overlayRef = useRef<HTMLCanvasElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
 
@@ -297,6 +443,26 @@ export function Treemap({
   const morphRef = useRef(false);
   const morphRafRef = useRef(0);
   const moveRafRef = useRef(0);
+  const recolorRafRef = useRef(0);
+  /**
+   * A view change owns the canvas from the moment it starts fetching until
+   * its animation lands. Without this the fetch's own arrival would start a
+   * refit animation underneath the zoom — the two loops fight over the
+   * canvas, and the refit's last frame (it is the shorter of the two) paints
+   * the settled map straight through the middle of the zoom.
+   */
+  const pendingZoomRef = useRef(false);
+  /**
+   * The camera the picture on screen is being seen through: the layout rect
+   * `from` that the screen rect `u` currently holds. `null` is the camera at
+   * rest, where `rectMap` is the identity.
+   *
+   * A zoom that interrupts another one starts from *this* — where the node it
+   * pivots on is being drawn right now — rather than from the layout, which
+   * is not what is on screen. Scrolling three notches fast is then three
+   * continuous moves, not a snap back to where the first one started.
+   */
+  const camRef = useRef<{ from: Snapped; u: Snapped } | null>(null);
 
   const generationRef = useRef(generation);
   generationRef.current = generation;
@@ -314,12 +480,31 @@ export function Treemap({
   maxDepthRef.current = maxDepth;
   const accentRef = useRef(accent);
   accentRef.current = accent;
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
+
+  /**
+   * The block colours in force right now — the colour mode the setting asks
+   * for, the accent, and the theme the document actually resolved to. Read at
+   * paint time rather than passed around, because a bake happens long after
+   * the render that asked for it and only the current values matter.
+   */
+  const colorsNow = useCallback(
+    () => blockColors(modeRef.current, accentRef.current, activeTheme()),
+    [],
+  );
 
   const [crumbs, setCrumbs] = useState<Crumb[]>([]);
   const [tooltip, setTooltip] = useState<TooltipData | null>(null);
   const [hasRects, setHasRects] = useState(false);
   const [forceOpenId, setForceOpenId] = useState<number | null>(null);
   forceOpenRef.current = forceOpenId;
+
+  /** Where a step back lands: the way in, or the tree's own parent. */
+  const backTarget = useCallback(
+    () => backRef.current.at(-1) ?? crumbs.at(-2)?.id ?? null,
+    [crumbs],
+  );
 
   const drawOverlay = useCallback(() => {
     const overlay = overlayRef.current;
@@ -329,19 +514,26 @@ export function Treemap({
     if (hitFrozenRef.current) return;
     const dpr = window.devicePixelRatio || 1;
     const theme = canvasColors();
+    // The ring follows the block's own corners — a square outline around a
+    // rounded block shows the four corners it does not have.
     const outline = (id: number | null, color: string, width: number) => {
       if (id === null || id === rootIdRef.current) return;
       const r = byIdRef.current.get(id);
       if (!r) return;
-      const s = snap(r, dpr, 0);
+      const s = snap(r, dpr, 1);
+      const half = width / 2;
       ctx.strokeStyle = color;
       ctx.lineWidth = width;
-      ctx.strokeRect(
-        s.x + width / 2,
-        s.y + width / 2,
+      ctx.beginPath();
+      roundRectPath(
+        ctx,
+        s.x + half,
+        s.y + half,
         s.w - width,
         s.h - width,
+        Math.max(0, cornerRadius(s, dpr) - half),
       );
+      ctx.stroke();
     };
     outline(selectedRef.current, theme.selection, 2);
     const hovered = hoveredIdRef.current;
@@ -376,7 +568,45 @@ export function Treemap({
     drawOverlay();
   }, [drawOverlay]);
 
-  const bake = useCallback(
+  /**
+   * Names, on a canvas of their own above the blocks and below the rings.
+   *
+   * Not baked into the picture, because every animation here is a *transform
+   * of a picture*: text inside one gets stretched, and a name stretched to
+   * three times its size is a smear. On its own layer the map can be thrown
+   * around underneath and the names simply step out of the way (a fade, see
+   * `fadeLabels`) and back in when it settles — which is also what the system
+   * this map is imitating does with its own labels.
+   */
+  const paintLabels = useCallback(
+    (rects: TreemapRect[]) => {
+      const label = labelRef.current;
+      if (!label || label.width === 0) return;
+      const ctx = label.getContext("2d")!;
+      ctx.clearRect(0, 0, label.width, label.height);
+      if (!labelsRef.current) return;
+      drawLabels(ctx, rects, window.devicePixelRatio || 1, colorsNow());
+    },
+    [colorsNow],
+  );
+
+  const fadeLabels = useCallback((to: 0 | 1, ms: number) => {
+    const label = labelRef.current;
+    if (!label) return;
+    const instant = ms === 0 || reducedMotion();
+    label.style.transition = instant ? "none" : `opacity ${ms}ms linear`;
+    label.style.opacity = String(to);
+  }, []);
+
+  /**
+   * Paint the layout into the offscreen picture, and the names onto their own
+   * layer. `bake` is this plus showing it; the two are separate because a view
+   * change has to paint the layout it is arriving at *without* showing it —
+   * its frames are the only thing that may touch the canvas from the moment
+   * the fetch starts, or the settled map flashes through the middle of the
+   * zoom.
+   */
+  const render = useCallback(
     (drawn: TreemapRect[] = rectsRef.current, withLabels = true) => {
       const base = baseRef.current;
       if (!base || base.width === 0) return;
@@ -391,6 +621,8 @@ export function Treemap({
       const dpr = window.devicePixelRatio || 1;
       const rects = drawn;
       const theme = canvasColors();
+      const minSide = GLOSS_MIN_PX * dpr;
+      const span = GLOSS_SPAN_PX * dpr;
 
       // The map's own surface, behind every block: a folder that subdivided is
       // only the backdrop for what it contains, so it is not painted at all —
@@ -401,105 +633,201 @@ export function Treemap({
       ctx.fillRect(0, 0, off.width, off.height);
 
       // Folders are drawn exactly like files — one flat colour, a 1px gap, the
-      // same sheen over the top — and differ only in the colour. Anything more
-      // than that (a texture, a seam, a reserved strip) makes a folder read as a
-      // surface rather than as a block, which is what a plate full of small
-      // files should look like.
+      // same light over the top, the same rounded corners — and differ only in
+      // the colour. Anything more than that (a texture, a seam, a reserved
+      // strip) makes a folder read as a surface rather than as a block, which
+      // is what a plate full of small files should look like.
+      const colors = colorsNow();
       const plates = solidPlates(rects);
-      ctx.fillStyle = folderPlate(accentRef.current);
+      ctx.fillStyle = colors.folder;
       ctx.beginPath();
       for (const r of rects) {
         if (!plates.has(r.id)) continue;
         const s = snap(r, dpr, 1);
-        if (s.w > 0 && s.h > 0) ctx.rect(s.x, s.y, s.w, s.h);
+        if (s.w > 0 && s.h > 0)
+          roundRectPath(ctx, s.x, s.y, s.w, s.h, cornerRadius(s, dpr));
       }
       ctx.fill();
 
-      const buckets: TreemapRect[][] = PALETTE.map(() => []);
+      const buckets: TreemapRect[][] = colors.byCategory.map(() => []);
       for (const r of rects) {
         if (!r.isDir) buckets[r.category]?.push(r);
       }
       for (let c = 0; c < buckets.length; c++) {
         const bucket = buckets[c];
         if (bucket.length === 0) continue;
-        ctx.fillStyle = PALETTE[c];
+        ctx.fillStyle = colors.byCategory[c];
         ctx.beginPath();
         for (const r of bucket) {
           const s = snap(r, dpr, 1);
-          if (s.w > 0 && s.h > 0) ctx.rect(s.x, s.y, s.w, s.h);
+          if (s.w > 0 && s.h > 0)
+            roundRectPath(ctx, s.x, s.y, s.w, s.h, cornerRadius(s, dpr));
         }
         ctx.fill();
       }
 
-      // A 1px bevel rather than a stretched gradient. The light and the shadow
-      // are the same colour on every block, so all the top edges go into one
-      // path and all the bottom edges into another — two fills for the whole
-      // map, where the sprite was one scaled drawImage per block. And being a
-      // fixed pixel size, neither edge stretches: the gradient this replaces
-      // was a 128×128 radial sprite drawn into every block's rect, which on a
-      // large or non-square block smeared into something between a bubble and
-      // a fingerprint.
-      const edge = BEVEL_MIN_PX * dpr;
-      ctx.fillStyle = BEVEL_LIGHT;
-      ctx.beginPath();
+      // The light on top. A vertical linear gradient from the top edge of the
+      // block, which is the one kind of gradient that *should* be stretched to
+      // fit: it has no shape to distort. The radial sprite this replaced did,
+      // and on a large or non-square block smeared into something between a
+      // bubble and a fingerprint.
+      //
+      // Grouped by top edge, because a gradient belongs to the box it is
+      // defined in and blocks that start at the same height can share one.
+      // Rows are what a treemap is made of, so that is most of them: measured
+      // at 3200 lit blocks, one gradient each costs 104ms a bake and one per
+      // row costs 8ms. It also makes the light fall the same way on every
+      // block rather than being squeezed into the short ones.
+      const rows = new Map<number, Snapped[]>();
       for (const r of rects) {
         if (r.isDir && !plates.has(r.id)) continue;
         const s = snap(r, dpr, 1);
-        if (s.w >= edge && s.h >= edge) ctx.rect(s.x, s.y, s.w, dpr);
+        if (s.w < minSide || s.h < minSide) continue;
+        const row = rows.get(s.y);
+        if (row) row.push(s);
+        else rows.set(s.y, [s]);
       }
-      ctx.fill();
-      ctx.fillStyle = BEVEL_DARK;
-      ctx.beginPath();
-      for (const r of rects) {
-        if (r.isDir && !plates.has(r.id)) continue;
-        const s = snap(r, dpr, 1);
-        if (s.w >= edge && s.h >= edge)
-          ctx.rect(s.x, s.y + s.h - dpr, s.w, dpr);
+      for (const [top, row] of rows) {
+        const g = ctx.createLinearGradient(0, top, 0, top + span);
+        g.addColorStop(0, GLOSS_LIGHT);
+        g.addColorStop(1, "rgba(255, 255, 255, 0)");
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        for (const s of row) {
+          roundRectPath(ctx, s.x, s.y, s.w, s.h, cornerRadius(s, dpr));
+        }
+        ctx.fill();
       }
-      ctx.fill();
 
-      if (withLabels && labelsRef.current) {
-        drawLabels(ctx, rects, dpr, folderPlate(accentRef.current));
-      }
-
-      if (zoomRafRef.current === 0) blit();
+      if (withLabels) paintLabels(rects);
     },
-    [blit],
+    [colorsNow, paintLabels],
+  );
+
+  const bake = useCallback(
+    (drawn: TreemapRect[] = rectsRef.current, withLabels = true) => {
+      render(drawn, withLabels);
+      // A zoom or a recolour in flight is drawing its own frames onto the same
+      // canvas, and this would land on top of one of them.
+      if (zoomRafRef.current === 0 && recolorRafRef.current === 0) blit();
+    },
+    [render, blit],
   );
 
   /**
-   * Open the plate: the folder that was clicked keeps its frame, and what is
-   * inside it grows out of that frame's centre.
+   * The same map in different colours — another accent, another colour mode,
+   * another theme.
+   *
+   * Nothing about the geometry changes, which makes this the one change a
+   * dissolve is exactly right for: the picture going out and the picture
+   * coming in are identical to the pixel apart from the colour, so there is
+   * nothing to ghost and no shape to move. Cross-fading is what a dissolve
+   * does *badly* when the two frames are different layouts — that is a
+   * flicker — and perfectly when they are the same one.
+   *
+   * If something else is already animating, this only repaints: that
+   * animation is drawing the canvas, it is drawing the *old* colours out of
+   * its own frozen picture, and it will land on the new ones — which is the
+   * right answer and one nobody has to wait for.
+   */
+  const recolour = useCallback(() => {
+    const base = baseRef.current;
+    const off = offscreenRef.current;
+    const busy =
+      zoomRafRef.current !== 0 ||
+      morphRafRef.current !== 0 ||
+      moveRafRef.current !== 0;
+    if (busy || !base || !off || off.width === 0 || reducedMotion()) {
+      render();
+      if (!busy) blit();
+      return;
+    }
+    let was = wasRef.current;
+    if (!was) {
+      was = document.createElement("canvas");
+      wasRef.current = was;
+    }
+    was.width = off.width;
+    was.height = off.height;
+    was.getContext("2d")!.drawImage(base, 0, 0);
+    render();
+    const start = performance.now();
+    const ctx = base.getContext("2d")!;
+    const step = () => {
+      const t = Math.min(1, (performance.now() - start) / MOTION.recolor);
+      const e = EASE.move(t);
+      ctx.globalAlpha = 1;
+      ctx.drawImage(off, 0, 0);
+      ctx.globalAlpha = 1 - e;
+      ctx.drawImage(was!, 0, 0);
+      ctx.globalAlpha = 1;
+      if (t < 1) {
+        recolorRafRef.current = requestAnimationFrame(step);
+      } else {
+        recolorRafRef.current = 0;
+        blit();
+        fadeLabels(1, LABEL_FADE_IN_MS);
+        drawOverlay();
+      }
+    };
+    fadeLabels(0, LABEL_FADE_OUT_MS);
+    cancelAnimationFrame(recolorRafRef.current);
+    recolorRafRef.current = requestAnimationFrame(step);
+  }, [blit, drawOverlay, fadeLabels, render]);
+
+  /**
+   * A folder opening or closing inside the view: the folder that was clicked
+   * keeps its frame, and what is inside it grows out of that frame's centre —
+   * or shrinks back into it.
    *
    * This is the one animation that fits the change. Opening a folder adds
    * rects *inside* the one that was clicked and moves nothing else, so there
    * is no travel to show between the old layout and the new — and the two
    * obvious alternatives both look wrong. Moving each child out of the plate's
-   * centre stacks three hundred blocks and their sheen on one point until the
-   * middle goes white; cross-fading the two pictures leaves two different
-   * layouts ghosted over each other, which is a flicker rather than a
-   * transition, because consecutive frames share no motion.
+   * centre stacks three hundred blocks on one point until the middle goes
+   * white (the reason the blocks no longer carry a stretched sheen, which is
+   * what turned that into a flashbulb); cross-fading the two pictures leaves
+   * two different layouts ghosted over each other, which is a flicker rather
+   * than a transition, because consecutive frames share no motion.
    *
    * Scaling the plate's contents out of its own centre is one continuous
    * transform: every frame is the last one, slightly larger, and nothing
    * overlaps anything it did not already overlap. It is also the same visual
    * language as the zoom, which is the animation this one sits next to.
    *
-   * `about` is the rect to open out of — the folder that was opened, or the
-   * one that closed. The old picture is the canvas as it stands, so this has
-   * to run before the new one is baked over it.
+   * Both lists run in the same pass. Only one directory can be open at a time
+   * — opening a second closes the first — and a close that waits for the open
+   * to finish, or worse happens as a cut when the frames stop, is the change
+   * happening twice. Which folder is which comes from the two layouts, not
+   * from what the click said: a folder that showed children a moment ago and
+   * does not now is closing, whatever the reason.
+   *
+   * The old picture is the canvas as it stands, so this has to run before the
+   * new one is baked over it.
    */
   const morph = useCallback(
-    (to: TreemapRect[], about: number | null) => {
+    (to: TreemapRect[], opens: number[], closes: number[]) => {
       const base = baseRef.current;
       const off = offscreenRef.current;
       const dpr = window.devicePixelRatio || 1;
-      // The frame to open out of is the folder's own, looked up in the layout
-      // just received — opening leaves the folder's rect in place (its
-      // children go inside it) and closing puts the plate back, so it is
-      // there either way, and it is the frame it always had.
-      const target = about === null ? undefined : byIdRef.current.get(about);
-      if (!base || !off || off.width === 0 || !target || reducedMotion()) {
+      // The frames to open out of and close into are the folders' own, looked
+      // up in the layout just received: opening leaves the folder's rect in
+      // place (its children go inside it) and closing puts the plate back, so
+      // they are there either way, and they are the frames they always had.
+      const framesOf = (ids: number[]) =>
+        ids
+          .map((id) => byIdRef.current.get(id))
+          .filter((r): r is TreemapRect => r !== undefined)
+          .map((r) => frame(r, dpr));
+      const opening = framesOf(opens);
+      const closing = framesOf(closes);
+      if (
+        !base ||
+        !off ||
+        off.width === 0 ||
+        (opening.length === 0 && closing.length === 0) ||
+        reducedMotion()
+      ) {
         bake(to);
         return;
       }
@@ -513,52 +841,40 @@ export function Treemap({
       was.getContext("2d")!.drawImage(off, 0, 0);
 
       bake(to);
-      const box = snap(target, dpr, 0);
-      const cx = box.x + box.w / 2;
-      const cy = box.y + box.h / 2;
       const start = performance.now();
       const ctx = base.getContext("2d")!;
       const step = () => {
         const t = Math.min(1, (performance.now() - start) / MOTION.open);
-        const ease = 1 - (1 - t) * (1 - t);
+        const e = EASE.open(t);
         ctx.clearRect(0, 0, base.width, base.height);
         ctx.drawImage(was!, 0, 0);
-        ctx.save();
-        ctx.beginPath();
-        ctx.rect(box.x, box.y, box.w, box.h);
-        ctx.clip();
-        ctx.translate(cx, cy);
-        ctx.scale(ease, ease);
-        ctx.translate(-cx, -cy);
-        // The folder's own patch of the new picture onto itself, under the
-        // scale — not the whole picture, which would drag the rest of the map
-        // in towards this centre along with it.
-        ctx.drawImage(
-          off,
-          box.x,
-          box.y,
-          box.w,
-          box.h,
-          box.x,
-          box.y,
-          box.w,
-          box.h,
-        );
-        ctx.restore();
+        // Closing first, so that what is opening wins where the two overlap
+        // (a folder can close around one that opens only if the layout closed
+        // it too, which it does not — the open chain keeps its ancestors —
+        // but the order costs nothing and the alternative is a surprise).
+        for (const b of closing) {
+          // Put back what stands there now — the plate, with the name on it
+          // again — and shrink the old contents away towards the middle of it.
+          ctx.drawImage(off, b.x, b.y, b.w, b.h, b.x, b.y, b.w, b.h);
+          scaleAbout(ctx, was!, b, 1 - e);
+        }
+        for (const b of opening) scaleAbout(ctx, off, b, e);
         if (t < 1) {
           morphRafRef.current = requestAnimationFrame(step);
         } else {
           morphRafRef.current = 0;
           blit();
           hitFrozenRef.current = false;
+          fadeLabels(1, LABEL_FADE_IN_MS);
           drawOverlay();
         }
       };
       hitFrozenRef.current = true;
+      fadeLabels(0, LABEL_FADE_OUT_MS);
       cancelAnimationFrame(morphRafRef.current);
       morphRafRef.current = requestAnimationFrame(step);
     },
-    [bake, blit, drawOverlay],
+    [bake, blit, drawOverlay, fadeLabels],
   );
 
   /**
@@ -583,7 +899,7 @@ export function Treemap({
       const start = performance.now();
       const step = () => {
         const t = Math.min(1, (performance.now() - start) / MOTION.move);
-        const ease = easeOut(t);
+        const ease = EASE.move(t);
         const drawn = to.map((r) => {
           const was = prev.get(r.id);
           if (!was) return r;
@@ -596,7 +912,11 @@ export function Treemap({
           };
         });
         rectsRef.current = drawn;
-        bake(drawn, false);
+        // Labels ride along here — a block sliding is a block sliding, and
+        // its name should stay on it. They are only taken off for the two
+        // changes that transform the picture itself, where a name would be
+        // stretched with it.
+        bake(drawn, true);
         if (t < 1) {
           moveRafRef.current = requestAnimationFrame(step);
         } else {
@@ -688,11 +1008,27 @@ export function Treemap({
       cancelAnimationFrame(moveRafRef.current);
       moveRafRef.current = 0;
       const animating = !reducedMotion() && was.length > 0;
-      if (morphRef.current) {
+      if (pendingZoomRef.current) {
+        // A view change is in flight and owns the canvas from here; it reads
+        // the layout off the refs itself. Starting a refit underneath it puts
+        // two animations on one canvas, and the refit is the shorter of the
+        // two — its last frame paints the settled map through the middle of
+        // the zoom.
+        rectsRef.current = rects;
+      } else if (morphRef.current) {
         morphRef.current = false;
         rectsRef.current = rects;
-        // `morph` owns the freeze from here: it lifts it when the frames stop.
-        morph(rects, aboutRef.current);
+        // Which folders are opening and which are closing is read off the two
+        // layouts rather than off what the click asked for: a second click
+        // both opens one folder and closes another, and the close has to run
+        // in the same pass as the open.
+        const before = dirsWithChildren(was);
+        const after = dirsWithChildren(rects);
+        morph(
+          rects,
+          [...after].filter((id) => !before.has(id)),
+          [...before].filter((id) => !after.has(id)),
+        );
       } else if (animating && moved(was, rects)) {
         moveTo(was, rects);
       } else {
@@ -730,38 +1066,61 @@ export function Treemap({
    * in front of it that read as nothing having happened.
    */
   const lastClickRef = useRef<number | null>(null);
-  /** The folder the pending layout change is about, for the animation. */
-  const aboutRef = useRef<number | null>(null);
+  /**
+   * The view roots the user has been at, most recent last. Backspace and the
+   * wheel walk back down it, because "where I was" is not the same thing as
+   * the breadcrumb's parent: a plate in the root view can be four levels deep,
+   * and coming back out of it should land in the root view, not in that
+   * folder's parent. The breadcrumb stays the tree's own path — clicking it is
+   * a move like any other, and it goes on the history too.
+   */
+  const backRef = useRef<number[]>([]);
+  /**
+   * The root a step back is on its way to. Held as the destination rather than
+   * as a flag so that it cannot go stale: the effect below only skips the push
+   * when the root it is reacting to is exactly this one.
+   */
+  const backJumpRef = useRef<number | null>(null);
 
   /** Open (or close) the folder the click landed on, right away. */
   const setOpen = useCallback((id: number | null) => {
     lastClickRef.current = id;
-    aboutRef.current = id ?? forceOpenRef.current;
     setForceOpenId(id);
   }, []);
 
   /**
    * Change the view root, showing the move.
    *
-   * The animation is a scale of the picture as it stands, and the rect it
-   * scales from is different going in and coming out: zooming into a folder
-   * scales *it* up to fill the pane, and zooming out scales *the folder being
-   * left* down into the place it holds in the layout we are moving to. That
-   * second rect only exists once the new layout is here — which is why the
-   * fetch comes first and the animation second, and why zooming out used to
-   * have no animation at all: it looked for the parent in the rects it had,
-   * the parent is not drawn in the layout being left, and it gave up.
+   * One camera, two pictures. The pivot is the node both layouts have in
+   * common — the folder being entered (it is drawn in the layout being left)
+   * or the folder being left (it is drawn in the layout arriving) — and it
+   * occupies `from` in one and `to` in the other. Every frame draws both
+   * layouts through the same camera, placed so that the pivot's patch of each
+   * covers the *same* screen rectangle: both are put where the two layouts
+   * agree. They cross-dissolve across it.
+   *
+   * Zooming out is not a second animation. It is these same two lines with
+   * `from` and `to` swapped — which is what was wrong before: there was one
+   * drawing (magnify towards the pivot's frame) and it ran in both directions,
+   * so going out magnified its way into a corner and then cut to the map.
    *
    * The picture frozen is the canvas as it stands rather than the last settled
    * bake, so a second notch of the wheel continues from the frame on screen
-   * instead of snapping back to where the first one started.
+   * instead of snapping back to where the first one started. Where that frame
+   * is seen from is `camRef`, and a gesture that interrupts one still running
+   * asks it where the pivot is *now*, not where the layout says it is.
    */
   const drillTo = useCallback(
     async (id: number) => {
       if (id === rootIdRef.current) return;
       const leaving = rootIdRef.current;
-      const into = byIdRef.current.get(id);
+      const dpr = window.devicePixelRatio || 1;
       const base = baseRef.current;
+      const prevCam = camRef.current;
+      const into = byIdRef.current.get(id);
+      /** Where a rect of the layout being left is on screen right now. */
+      const onScreen = (f: Snapped) =>
+        prevCam ? rectMap(f, prevCam.from, prevCam.u) : f;
       let frozen: HTMLCanvasElement | null = null;
       if (base && base.width > 0) {
         frozen = document.createElement("canvas");
@@ -775,6 +1134,7 @@ export function Treemap({
       morphRafRef.current = 0;
       zoomRafRef.current = 0;
       morphRef.current = false;
+      pendingZoomRef.current = true;
       hitFrozenRef.current = true;
       setTooltip(null);
       mouseOverRef.current = null;
@@ -784,56 +1144,106 @@ export function Treemap({
       // here. Anywhere else, the accordion is about a view you have left.
       setForceOpenId((open) => (open === id ? open : null));
       drawOverlay(); // clear rings: they describe the view being left
+      fadeLabels(0, LABEL_FADE_OUT_MS);
 
       await fetchLayout();
+      // Superseded by a later view change, which owns the flags from here.
       if (rootIdRef.current !== id) return;
+      pendingZoomRef.current = false;
+      // The fetch only recorded the layout; paint it, but do not show it yet.
+      // It arrives as the second of the two pictures below.
+      render();
 
-      const from = into ?? byIdRef.current.get(leaving);
       const off = offscreenRef.current;
-      if (from && from.isDir && frozen && off && !reducedMotion()) {
-        const dpr = window.devicePixelRatio || 1;
-        const target = snap(from, dpr, 0);
-        const start = performance.now();
-        const ctx = base!.getContext("2d")!;
-        const step = () => {
-          const t = Math.min(1, (performance.now() - start) / MOTION.zoom);
-          const ease = easeOut(t);
-          const sx = target.x * ease;
-          const sy = target.y * ease;
-          const sw = frozen!.width + (target.w - frozen!.width) * ease;
-          const sh = frozen!.height + (target.h - frozen!.height) * ease;
-          ctx.clearRect(0, 0, base!.width, base!.height);
-          ctx.drawImage(
-            frozen!,
-            sx,
-            sy,
-            sw,
-            sh,
-            0,
-            0,
-            base!.width,
-            base!.height,
-          );
-          if (t < 1) {
-            zoomRafRef.current = requestAnimationFrame(step);
-          } else {
-            zoomRafRef.current = 0;
-            blit();
-            hitFrozenRef.current = false;
-            drawOverlay();
-          }
-        };
-        zoomRafRef.current = requestAnimationFrame(step);
-      } else {
+      const view: Snapped = {
+        x: 0,
+        y: 0,
+        w: base?.width ?? 0,
+        h: base?.height ?? 0,
+      };
+      // Coming in, the pivot is the folder being entered and it lands filling
+      // the view; going out, it is the one being left, and it is where it
+      // lands in the layout arriving. Either way the two layouts are the only
+      // things it has to be read from, and the second one is only here now.
+      const landing = byIdRef.current.get(into ? id : leaving);
+      const pivotNew = into ? view : landing ? frame(landing, dpr) : view;
+      // Going out, the pivot is the folder being left, and in the layout being
+      // left that folder *is* the viewport. Both ends therefore go through the
+      // same question — where is this rect on screen right now — which is what
+      // makes a gesture that interrupts one still running carry on from the
+      // frame on screen rather than from a layout it is no longer showing.
+      const pivotOld = onScreen(into ? frame(into, dpr) : view);
+      if (
+        !view.w ||
+        !frozen ||
+        !off ||
+        !pivotOld.w ||
+        !pivotOld.h ||
+        !pivotNew.w ||
+        !pivotNew.h ||
+        reducedMotion()
+      ) {
         bake();
         hitFrozenRef.current = false;
+        fadeLabels(1, LABEL_FADE_IN_MS);
         drawOverlay();
+        return;
       }
+      const was = frozen;
+      const start = performance.now();
+      const ctx = base!.getContext("2d")!;
+      const paint = (pic: CanvasImageSource, box: Snapped, alpha: number) => {
+        if (alpha <= 0.002) return;
+        ctx.globalAlpha = alpha;
+        ctx.drawImage(pic, box.x, box.y, box.w, box.h);
+        ctx.globalAlpha = 1;
+      };
+      const step = () => {
+        const t = Math.min(1, (performance.now() - start) / MOTION.zoom);
+        const e = EASE.zoom(t);
+        const u = lerpRect(pivotOld, pivotNew, e);
+        const oldBox = rectMap(view, pivotOld, u);
+        const newBox = rectMap(view, pivotNew, u);
+        camRef.current = { from: pivotNew, u };
+        ctx.clearRect(0, 0, base!.width, base!.height);
+        // Whichever picture owns the smaller frame goes on top and fades
+        // across the other. That is the whole of the difference between going
+        // in and coming out: entering, the new picture is the small one and
+        // grows; leaving, the old one is, and shrinks away under it.
+        if (oldBox.w * oldBox.h < newBox.w * newBox.h) {
+          paint(off, newBox, 1);
+          paint(was, oldBox, 1 - e);
+        } else {
+          paint(was, oldBox, 1);
+          paint(off, newBox, e);
+        }
+        if (t < 1) {
+          zoomRafRef.current = requestAnimationFrame(step);
+        } else {
+          zoomRafRef.current = 0;
+          camRef.current = null;
+          blit();
+          hitFrozenRef.current = false;
+          fadeLabels(1, LABEL_FADE_IN_MS);
+          drawOverlay();
+        }
+      };
+      zoomRafRef.current = requestAnimationFrame(step);
     },
-    [bake, blit, drawOverlay, fetchLayout],
+    [bake, blit, drawOverlay, fetchLayout, fadeLabels, render],
   );
 
   useEffect(() => {
+    // Every way of changing the view comes through here, so this is where the
+    // way back is kept. Going back is not one of them: it is the history
+    // being walked, and pushing it again would make Backspace bounce between
+    // two folders instead of retracing the way in.
+    const prev = rootIdRef.current;
+    if (backJumpRef.current !== rootId && rootId !== prev) {
+      backRef.current.push(prev);
+      if (backRef.current.length > BACK_HISTORY_MAX) backRef.current.shift();
+    }
+    backJumpRef.current = null;
     drillTo(rootId);
   }, [rootId, drillTo]);
 
@@ -850,6 +1260,10 @@ export function Treemap({
     crumbsRootRef.current = null;
     crumbIdsRef.current = new Set();
     offscreenRef.current = null;
+    backRef.current = [];
+    backJumpRef.current = null;
+    pendingZoomRef.current = false;
+    camRef.current = null;
     // Ids belong to a tree, and this is a different one. Holding an open
     // folder across scans would open whatever now happens to have that id.
     setForceOpenId(null);
@@ -868,8 +1282,9 @@ export function Treemap({
   }, [revision, fetchLayout]);
 
   useEffect(() => {
-    bake(); // repaint the baked layout with the new theme's canvas colors
-  }, [themeRev, bake]);
+    // A new theme, accent or colour mode: the same layout, painted again.
+    recolour();
+  }, [themeRev, recolour]);
 
   useEffect(() => {
     void fetchLayout();
@@ -931,7 +1346,7 @@ export function Treemap({
       const dpr = window.devicePixelRatio || 1;
       const w = Math.round(container.clientWidth * dpr);
       const h = Math.round(container.clientHeight * dpr);
-      for (const c of [baseRef.current, overlayRef.current]) {
+      for (const c of [baseRef.current, labelRef.current, overlayRef.current]) {
         if (c && (c.width !== w || c.height !== h)) {
           c.width = w;
           c.height = h;
@@ -977,10 +1392,14 @@ export function Treemap({
    * depth. `hitTest` alone will not do — it answers with whatever is smallest
    * there, which is usually a file — so this walks the list for the deepest
    * *directory* instead.
+   *
+   * Unlike `hitTest` this keeps answering while a zoom is running, against the
+   * layout it is arriving at. Clicking into a moving picture is a misclick;
+   * asking the wheel for another notch is not — it is one gesture, and the
+   * next notch should carry on from where this one has got to.
    */
   const dirAt = useCallback(
     (cssX: number, cssY: number): TreemapRect | null => {
-      if (hitFrozenRef.current) return null;
       let best: TreemapRect | null = null;
       for (const r of rectsRef.current) {
         if (!r.isDir) continue;
@@ -1105,10 +1524,10 @@ export function Treemap({
       if (!hit) return;
       onContext(hit.id, e.clientX, e.clientY, {
         inId: dirAt(cssX, cssY)?.id ?? null,
-        outId: crumbs.length >= 2 ? crumbs[crumbs.length - 2].id : null,
+        outId: backTarget(),
       });
     },
-    [hitTest, dirAt, crumbs, onContext],
+    [hitTest, dirAt, backTarget, onContext],
   );
 
   const handleDoubleClick = useCallback(() => {
@@ -1123,9 +1542,14 @@ export function Treemap({
   }, [onNavigate]);
 
   const zoomOut = useCallback(() => {
-    if (crumbs.length < 2 || hitFrozenRef.current) return;
-    onNavigate(crumbs[crumbs.length - 2].id);
-  }, [crumbs, onNavigate]);
+    const target = backTarget();
+    if (target === null || target === rootIdRef.current) return;
+    // Retracing the way in rather than moving somewhere new, so this step
+    // must not push the place it is leaving.
+    if (backRef.current.at(-1) === target) backRef.current.pop();
+    backJumpRef.current = target;
+    onNavigate(target);
+  }, [backTarget, onNavigate]);
 
   const handleWheel = useCallback(
     (e: React.WheelEvent) => {
@@ -1188,6 +1612,9 @@ export function Treemap({
         onWheel={handleWheel}
       >
         <canvas ref={baseRef} className="absolute inset-0 h-full w-full" />
+        {/* Names live on their own layer so the map can be transformed
+            underneath them: text inside a picture being scaled is a smear. */}
+        <canvas ref={labelRef} className="absolute inset-0 h-full w-full" />
         <canvas ref={overlayRef} className="absolute inset-0 h-full w-full" />
         {!hasRects && (
           <div className="absolute inset-0 flex items-center justify-center text-xs text-ink-5">

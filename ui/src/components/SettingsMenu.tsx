@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   ACCENTS,
   type AccentName,
+  type ColorMode,
   type ThemePref,
   accentSwatch,
 } from "../lib/theme";
@@ -14,17 +15,32 @@ const THEME_OPTIONS: { value: ThemePref; label: string }[] = [
   { value: "dark", label: "Dark" },
 ];
 
+const MODE_OPTIONS: { value: ColorMode; label: string; title: string }[] = [
+  {
+    value: "classic",
+    label: "Classic",
+    title: "One colour for files, one for folders — the accent sets the tone",
+  },
+  {
+    value: "multi",
+    label: "Multi",
+    title: "A colour per file type, with folders in the accent colour",
+  },
+];
+
 interface SettingsMenuProps {
   hideSystem: boolean;
   showLabels: boolean;
   depth: DepthPref;
   themePref: ThemePref;
   accent: AccentName;
+  mode: ColorMode;
   onToggleHideSystem: () => void;
   onToggleShowLabels: () => void;
   onDepth: (depth: DepthPref) => void;
   onThemePref: (pref: ThemePref) => void;
   onAccent: (accent: AccentName) => void;
+  onMode: (mode: ColorMode) => void;
 }
 
 export function SettingsMenu({
@@ -33,11 +49,13 @@ export function SettingsMenu({
   depth,
   themePref,
   accent,
+  mode,
   onToggleHideSystem,
   onToggleShowLabels,
   onDepth,
   onThemePref,
   onAccent,
+  onMode,
 }: SettingsMenuProps) {
   const [open, setOpen] = useState(false);
   const boxRef = useRef<HTMLDivElement>(null);
@@ -136,6 +154,25 @@ export function SettingsMenu({
                 onClick={() => onThemePref(opt.value)}
                 className={`h-6 flex-1 rounded text-[12px] ${
                   themePref === opt.value
+                    ? "bg-raised text-ink"
+                    : "text-ink-4 hover:text-ink-2"
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          <div className="mt-3 text-[11px] font-medium tracking-wide text-ink-4 uppercase">
+            Colours
+          </div>
+          <div className="mt-1.5 flex rounded-md border border-edge p-0.5">
+            {MODE_OPTIONS.map((opt) => (
+              <button
+                key={opt.value}
+                onClick={() => onMode(opt.value)}
+                title={opt.title}
+                className={`h-6 flex-1 rounded text-[12px] ${
+                  mode === opt.value
                     ? "bg-raised text-ink"
                     : "text-ink-4 hover:text-ink-2"
                 }`}

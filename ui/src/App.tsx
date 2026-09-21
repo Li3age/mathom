@@ -366,6 +366,7 @@ export default function App() {
         typePanelOpen={typePanelOpen}
         themePref={theme.pref}
         accent={theme.accent}
+        mode={theme.mode}
         onScan={handleScan}
         onCancel={scan.cancel}
         onToggleHideSystem={scan.toggleHideSystem}
@@ -376,6 +377,7 @@ export default function App() {
         onApplyFilter={scan.setFilter}
         onThemePref={theme.setPref}
         onAccent={theme.setAccent}
+        onMode={theme.setMode}
       />
       {elevation !== null && !elevation.elevated && !elevationDismissed && (
         <ElevationBanner
@@ -431,6 +433,7 @@ export default function App() {
             filter={scan.filter}
             labels={scan.showLabels}
             accent={theme.accent}
+            mode={theme.mode}
             maxDepth={layoutDepth(scan.depth)}
             selected={selected}
             hoveredId={hoveredId}

@@ -1,6 +1,6 @@
 import type { SearchHit } from "../lib/api";
 import type { DepthPref } from "../lib/prefs";
-import type { AccentName, ThemePref } from "../lib/theme";
+import type { AccentName, ColorMode, ThemePref } from "../lib/theme";
 import { ExportMenu } from "./ExportMenu";
 import { ScanMenu } from "./ScanMenu";
 import { SearchBox } from "./SearchBox";
@@ -20,6 +20,7 @@ interface ToolbarProps {
   typePanelOpen: boolean;
   themePref: ThemePref;
   accent: AccentName;
+  mode: ColorMode;
   onScan: (path: string) => void;
   onCancel: () => void;
   onToggleHideSystem: () => void;
@@ -30,6 +31,7 @@ interface ToolbarProps {
   onApplyFilter: (query: string | null) => void;
   onThemePref: (pref: ThemePref) => void;
   onAccent: (accent: AccentName) => void;
+  onMode: (mode: ColorMode) => void;
 }
 
 export function Toolbar({
@@ -44,6 +46,7 @@ export function Toolbar({
   typePanelOpen,
   themePref,
   accent,
+  mode,
   onScan,
   onCancel,
   onToggleHideSystem,
@@ -54,6 +57,7 @@ export function Toolbar({
   onApplyFilter,
   onThemePref,
   onAccent,
+  onMode,
 }: ToolbarProps) {
   return (
     // The toolbar is the title bar (undecorated window): drag-region spacers drag it; children stay interactive.
@@ -110,11 +114,13 @@ export function Toolbar({
         depth={depth}
         themePref={themePref}
         accent={accent}
+        mode={mode}
         onToggleHideSystem={onToggleHideSystem}
         onToggleShowLabels={onToggleShowLabels}
         onDepth={onDepth}
         onThemePref={onThemePref}
         onAccent={onAccent}
+        onMode={onMode}
       />
       <WindowControls />
     </header>
