@@ -12,21 +12,32 @@
  *
  * It is a colour and nothing else — folders are drawn exactly like files.
  */
-export const FOLDER_PLATE = "#55618f";
+export const FOLDER_PLATE = "#4d5a86";
 
 // Indexed by mathom-core's `Category as u8`.
+//
+// One lightness, one personality. The categories came from Tailwind's 500s,
+// which are chosen to be *distinguishable*, not to sit together: yellow and
+// lime read as much lighter than blue and slate, so on a dark canvas two
+// classes shout and two recede, and the map looks like ten people each picked
+// a colour. These are the same hues at a single OKLab lightness (0.700) with
+// the chroma capped, which puts every class within a few percent of the same
+// WCAG luminance — no category is louder than another, and the map reads as
+// one palette. The two greys stay grey rather than being pulled up to the same
+// chroma as the rest; a neutral that is forced to have a hue lands on top of a
+// class that already owns it.
 export const PALETTE: readonly string[] = [
   FOLDER_PLATE, // 0 directory
-  "#a855f7", // 1 video
-  "#22c55e", // 2 audio
-  "#eab308", // 3 image
-  "#f97316", // 4 archive
-  "#3b82f6", // 5 document
-  "#06b6d4", // 6 code
-  "#ec4899", // 7 executable
-  "#64748b", // 8 system
-  "#84cc16", // 9 data
-  "#71717a", // 10 other
+  "#b286e7", // 1 video
+  "#52b76b", // 2 audio
+  "#c5970e", // 3 image
+  "#e67f47", // 4 archive
+  "#679ef8", // 5 document
+  "#0fb1ce", // 6 code
+  "#e275a4", // 7 executable
+  "#8fa0b8", // 8 system
+  "#7eb048", // 9 data
+  "#9d9da7", // 10 other
 ];
 
 /** Canvas colors resolved from the active theme's CSS variables. */
@@ -66,10 +77,14 @@ function luminance(r: number, g: number, b: number): number {
  * blocks keep the fixed category colours whatever the theme, so this picks
  * literal near-black or near-white rather than a theme token — a token would
  * be chosen for the plate, not for the colour actually underneath.
+ *
+ * The threshold is low because the palette's blocks are: every category sits
+ * near 0.34 luminance, where dark ink reads at about 4.8:1 and white at 2.6:1.
+ * Only the folder plates, half that again, take white.
  */
 export function textOn(fill: string): string {
   const [r, g, b] = rgb(fill);
-  return luminance(r, g, b) > 0.45
-    ? "rgba(12, 12, 14, 0.88)"
+  return luminance(r, g, b) > 0.25
+    ? "rgba(12, 12, 14, 0.92)"
     : "rgba(250, 250, 250, 0.92)";
 }
